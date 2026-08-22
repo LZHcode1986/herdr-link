@@ -110,8 +110,10 @@ running in the same Herdr session.
 
 ## 5. Peer 地址模型
 
-- 唯一公开地址是 Herdr Agent Name（`[a-z][a-z0-9_-]{0,31}`，live 唯一）。
+- 唯一公开地址是 Herdr Agent Name（`[a-z][a-z0-9_-]{0,31}`，live 全局唯一）。
+- **唯一性由 Herdr 强制**（实测：向已占用名字 rename 返回 `agent_name_taken`）。同一 Herdr daemon 内跨 workspace 共享命名空间，同一时刻不存在两个同名 live agent——`send`/`close` 按名字解析不会歧义。
 - Agent Name 跟随 pane occupant；agent 退出/释放/替换时清除。peer 列表是瞬时的，每次调用 `herdr_link_peers` 即时生成，不缓存。
+- 命名空间是全局共享的（谁先占名谁用），跨项目会撞名：部署者应按项目前缀命名 Agent（如 `proofloop-brain`），避免多项目同名冲突。
 
 `peers` 指所有拥有合法 Agent Name 的 live Herdr agent，即 Herdr Link transport 可寻址的 agent。V1 不验证目标 runtime 是否安装了 Herdr Link Adapter——可寻址（addressable）不等于支持 Link Contract（contract-supporting）。V1 部署者负责保证参与互通的各 Runtime 安装了对应 Adapter。
 ## 6. Adapter Contract
