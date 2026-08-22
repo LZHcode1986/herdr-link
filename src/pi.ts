@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolExecutionMode } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
@@ -86,6 +86,10 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link_close",
     label: "Herdr Link Close",
     description: "Close the Herdr pane currently hosting a named agent.",
+    // Pi 默认并行执行同一 assistant response 的 sibling tool calls；close 与 send 同批时
+    // 必须保证 send 先完成（"sent" 语义=Herdr 已接受投递），故 close 声明为 sequential，
+    // 使含 close 的批次整体串行。peers/send 保持默认并行。
+    executionMode: "sequential" as ToolExecutionMode,
     promptSnippet: "Close the Herdr pane currently hosting a named agent.",
     promptGuidelines: [
       "Use herdr_link_close only after deciding that the named agent's pane should be closed.",
