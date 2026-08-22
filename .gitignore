@@ -1,5 +1,6 @@
 node_modules/
-dist/
+dist/*
+!dist/herdr-link.opencode.js
 *.log
 .pi/subagents.json
 .agents/

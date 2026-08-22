@@ -55,6 +55,20 @@ pi --extension /path/to/herdr-link/src/pi.ts
 ```
 
 安装或加载后，Agent 的 system prompt 自动包含 Communication Contract，并获得三个工具：`herdr_link_peers`、`herdr_link_send`、`herdr_link_close`。
+
+## 安装（OpenCode Adapter）
+
+OpenCode 自动扫描 `~/.config/opencode/plugins/`（Bun 运行时支持 TS，扫描目录中**每个文件**都会当作 plugin 加载）。因此必须使用**单文件 bundle**（含三个模块），不能平铺多个源文件：
+
+```bash
+# 构建单文件 bundle（依赖 esbuild，仅开发机需要）
+npm install && npm run build:opencode
+
+# 部署：拷贝 bundle 到 opencode 插件目录
+cp dist/herdr-link.opencode.js ~/.config/opencode/plugins/herdr-link.js
+```
+
+部署或重启 opencode 后，agent 获得相同三个工具与 Communication Contract 注入（`experimental.chat.messages.transform`）。
 ## 环境要求
 
 运行环境必须由 Herdr managed pane 提供：

@@ -16,7 +16,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test"
+    "test": "node --test",
+    "build:opencode": "esbuild src/opencode.ts --bundle --format=esm --platform=node --external:@opencode-ai/plugin --outfile=dist/herdr-link.opencode.js"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -26,6 +27,7 @@
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@opencode-ai/plugin": "^1.18.13",
     "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
     "typebox": "^1.3.7",
     "typescript": "^5.7.0"
   }
