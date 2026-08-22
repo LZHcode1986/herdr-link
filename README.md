@@ -4,7 +4,7 @@
 
 - **协议**：`herdr-link/1`（唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)）
 - **首个 Runtime Adapter**：Pi（Extension API）
-- **设计文档**：[技术架构蓝图](.docs/Herdr_Link_Technical_Architecture_Blueprint.md)
+- **设计文档**：保存在本机开发环境的 `.docs/` 目录，不作为发布物。
 
 Herdr Link 不负责决定 Agent 应该做什么，也不负责 Agent 的创建、模型选择、调度、复用策略或工作流状态。它只提供跨 Agent 协作所需的最小公共能力。
 
@@ -17,6 +17,14 @@ Herdr Link 不负责决定 Agent 应该做什么，也不负责 Agent 的创建�
 | Message Send / Receive | `herdr_link_send` 投递 `herdr-link/1` envelope；目标 Agent 由契约识别 |
 | Reply Correlation | 回复通过 `reply_to` 与原消息关联 |
 | Pane Close | `herdr_link_close` 按 Agent Name 显式关闭目标 pane（仅能力，不判断时机） |
+
+### 最小互通示例
+
+```text
+Agent A → herdr_link_send → Agent B
+Agent B → herdr_link_send(reply_to=...) → Agent A
+herdr_link_close("worker-a")
+```
 
 ## 安装（Pi Adapter）
 
@@ -48,35 +56,18 @@ pi --extension /path/to/herdr-link/src/pi.ts
 
 ## 开发
 
-### 派发独立 Worker（标准操作）
+发布仓库仅包含扩展源码及发布所需的 `package.json`、`PROTOCOL.md`、`README.md` 与 `.gitignore`。完整开发环境（含 `test/`、`tsconfig.json` 等）保留在本机，不作为发布物。依赖安装、类型检查和单元测试等命令仅适用于本机开发副本，不是发布仓库的使用步骤。
 
-```bash
-# 1. 创建独立 tab（新 pane，独立屏幕）
-herdr tab create --workspace wH --cwd <工程> --label <名字> --no-focus
-
-# 2. 启动 pi worker —— 注意：--kind pi 会自动加上 "pi"，-- 后只写参数，不要再写 "pi"
-herdr agent start <name> --kind pi --pane <pane_id> --timeout 60000 -- --model openai-codex/gpt-5.6-luna --thinking max
-
-# 3. 用 herdr_link_send 派发任务（envelope）；任务里只描述目标，不教回传方式
-# 4. 收到 reply_to 关联原任务 ID 的回传即完成，随后 pane close 回收
-```
-
-**陷阱**：`--` 后多写 `pi` 会执行 `pi pi --model ...`，第二个 `pi` 被当作 prompt 发给 worker，产生多余消息并触发澄清请求。
-
-```bash
-npm install
-npm run typecheck   # tsc --noEmit
-npm test            # node --test（单元测试，mock CLI，不触碰真实 Herdr）
-```
-
-### 仓库结构
+### 发布仓库结构
 
 ```text
 PROTOCOL.md          协议唯一规范（Envelope、Contract、工具语义、错误模型）
+README.md            使用说明与安装指引
+package.json         扩展包元数据
+.gitignore           发布仓库忽略规则
 src/protocol.ts      协议核心：类型、buildEnvelope、错误、COMMUNICATION_CONTRACT
 src/herdr.ts         Herdr CLI 控制层：identity、peers、send、close
 src/pi.ts            Pi Runtime Adapter：契约注入 + 三个工具注册
-test/                node:test 单元测试
 ```
 
 分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` 只做 Extension 接线，无长期状态。

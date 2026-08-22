@@ -113,6 +113,7 @@ running in the same Herdr session.
 - 唯一公开地址是 Herdr Agent Name（`[a-z][a-z0-9_-]{0,31}`，live 唯一）。
 - Agent Name 跟随 pane occupant；agent 退出/释放/替换时清除。peer 列表是瞬时的，每次调用 `herdr_link_peers` 即时生成，不缓存。
 
+`peers` 指所有拥有合法 Agent Name 的 live Herdr agent，即 Herdr Link transport 可寻址的 agent。V1 不验证目标 runtime 是否安装了 Herdr Link Adapter——可寻址（addressable）不等于支持 Link Contract（contract-supporting）。V1 部署者负责保证参与互通的各 Runtime 安装了对应 Adapter。
 ## 6. Adapter Contract
 
 一个 Runtime 被视为支持 Herdr Link，只需满足四项：
