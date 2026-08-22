@@ -213,6 +213,15 @@ export async function sendMessage(
   return { status: "sent", id: envelope.id, to };
 }
 
+export async function getPaneAgentName(pane: string): Promise<string | undefined> {
+  const response = await runFor(["agent", "get", pane], "PEER_NOT_FOUND");
+  return agentName(response);
+}
+
+export async function renamePaneAgent(pane: string, name: string): Promise<void> {
+  await runFor(["agent", "rename", pane, name], "SELF_UNNAMED");
+}
+
 export async function closeAgentPane(agentName: string): Promise<{ status: "closed"; agent: string }> {
   assertHerdrEnvironment();
   if (!isValidAgentName(agentName)) {

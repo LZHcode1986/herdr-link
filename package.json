@@ -7,7 +7,7 @@
   },
 
   "keywords": ["pi-package", "herdr", "agent-interop"],
-  "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. V1: Pi Runtime Adapter.",
+  "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. V1: Pi + OpenCode Runtime Adapters.",
   "type": "module",
   "private": true,
   "license": "MIT",

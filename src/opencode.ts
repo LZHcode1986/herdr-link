@@ -1,12 +1,14 @@
-import { tool, type Plugin, type ToolResult } from "@opencode-ai/plugin";
+import { tool, type Plugin } from "@opencode-ai/plugin";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
+import { startIdentityHeal, withIdentityHeal } from "./opencode-identity.ts";
 import { COMMUNICATION_CONTRACT, HerdrLinkError } from "./protocol.ts";
 
 const HERDR_LINK_TOOL_DESCRIPTION = {
   peers: "Discover named peers available through the cross-agent communication channel.",
   send: "Send a message to another agent through the cross-agent communication channel.",
-  close: "Close the Herdr pane currently hosting a named agent.",
+  close:
+    "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step.",
 } as const;
 
 function isHerdrEnvironment(): boolean {
@@ -21,38 +23,22 @@ function jsonResult(value: object): string {
   return JSON.stringify(value);
 }
 
-function toolError(error: unknown): ToolResult {
-  if (error instanceof HerdrLinkError) return error.message;
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function hasCommunicationContract(
-  messages: readonly { info: unknown; parts: readonly unknown[] }[],
-): boolean {
-  return messages.some(({ info, parts }) => {
-    const role =
-      typeof info === "object" && info !== null
-        ? (info as { role?: unknown }).role
-        : undefined;
-    if (role !== "system") return false;
-
-    return parts.some((part) => {
-      if (typeof part !== "object" || part === null) return false;
-      const candidate = part as { type?: unknown; text?: unknown };
-      return (
-        candidate.type === "text" &&
-        typeof candidate.text === "string" &&
-        candidate.text.includes(COMMUNICATION_CONTRACT)
-      );
-    });
-  });
+function rethrowToolError(error: unknown): never {
+  if (error instanceof HerdrLinkError) {
+    throw new Error(error.message, { cause: error });
+  }
+  if (error instanceof Error) {
+    throw error;
+  }
+  throw new Error(String(error));
 }
 
 export const herdrLinkPlugin: Plugin = async () => {
   if (!isHerdrEnvironment()) {
     return {};
   }
+
+  startIdentityHeal();
 
   return {
     tool: {
@@ -61,9 +47,9 @@ export const herdrLinkPlugin: Plugin = async () => {
         args: {},
         async execute() {
           try {
-            return jsonResult(await listPeers());
+            return jsonResult(await withIdentityHeal(() => listPeers()));
           } catch (error) {
-            return toolError(error);
+            rethrowToolError(error);
           }
         },
       }),
@@ -76,10 +62,12 @@ export const herdrLinkPlugin: Plugin = async () => {
         },
         async execute(args) {
           try {
-            const envelope = await sendMessage(args.to, args.message, args.reply_to);
+            const envelope = await withIdentityHeal(() =>
+              sendMessage(args.to, args.message, args.reply_to),
+            );
             return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
           } catch (error) {
-            return toolError(error);
+            rethrowToolError(error);
           }
         },
       }),
@@ -90,24 +78,18 @@ export const herdrLinkPlugin: Plugin = async () => {
         },
         async execute(args) {
           try {
-            await closeAgentPane(args.agent);
+            await withIdentityHeal(() => closeAgentPane(args.agent));
             return jsonResult({ status: "closed", agent: args.agent });
           } catch (error) {
-            return toolError(error);
+            rethrowToolError(error);
           }
         },
       }),
     },
-    "experimental.chat.messages.transform": async (_input, output) => {
-      if (hasCommunicationContract(output.messages)) return;
-
-      // OpenCode's transform message list is an internal representation. The
-      // SDK's public Message union omits the system role, but the hook accepts
-      // system messages and forwards their text parts to the model.
-      output.messages.unshift({
-        info: { role: "system" },
-        parts: [{ type: "text", text: COMMUNICATION_CONTRACT }],
-      } as never);
+    "experimental.chat.system.transform": async (_input, output) => {
+      if (!output.system.includes(COMMUNICATION_CONTRACT)) {
+        output.system.push(COMMUNICATION_CONTRACT);
+      }
     },
   };
 };

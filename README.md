@@ -3,7 +3,7 @@
 **Herdr Link 是运行在 Herdr 会话中的跨 Agent 互操作层**：每种 Agent Runtime 通过自己的 Adapter 自动获得统一的通信契约，并使用相同的 peer discovery、message send/reply 与 pane close 语义。
 
 - **协议**：`herdr-link/1`（唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)）
-- **首个 Runtime Adapter**：Pi（Extension API）
+- **Runtime Adapter**：Pi（Extension API）、OpenCode（Plugin，单文件 bundle）
 - **设计文档**：保存在本机开发环境的 `.docs/` 目录，不作为发布物。
 
 Herdr Link 不负责决定 Agent 应该做什么，也不负责 Agent 的创建、模型选择、调度、复用策略或工作流状态。它只提供跨 Agent 协作所需的最小公共能力。
@@ -68,7 +68,12 @@ npm install && npm run build:opencode
 cp dist/herdr-link.opencode.js ~/.config/opencode/plugins/herdr-link.js
 ```
 
-部署或重启 opencode 后，agent 获得相同三个工具与 Communication Contract 注入（`experimental.chat.messages.transform`）。
+部署或重启 opencode 后，agent 获得相同三个工具与 Communication Contract 注入（`experimental.chat.system.transform`）。
+
+### 身份自愈（OpenCode 专属）
+
+Herdr 对 opencode pane 的 agent 登记会在 pane 内进程组变化时整体重置并丢失名字（重启 opencode 后必现）。插件会自动把当前 pane 的期望名持久化在 `~/.local/state/herdr-link/opencode-agent-names.json` 并在三个时机自动恢复：plugin 启动校验、工具调用遇到 `SELF_UNNAMED` 时先恢复再重试一次、每 30 秒兜底检查。若原名已被其他 agent 占用，则回退为 `<name>-2` 等后缀并更新记录。因此用 `herdr agent rename <pane> <name>` 改名一次即可长期生效；清名到自愈之间的短暂窗口内发来的消息仍可能投递失败。
+
 ## 环境要求
 
 运行环境必须由 Herdr managed pane 提供：
@@ -79,7 +84,7 @@ cp dist/herdr-link.opencode.js ~/.config/opencode/plugins/herdr-link.js
 | `HERDR_BIN_PATH` | 当前 Herdr binary 路径（CLI wrapper 执行） |
 | `HERDR_PANE_ID` | caller pane，用于解析 self identity |
 
-非 Herdr managed pane 中，Pi Adapter 不注册任何工具、不注入 Communication Contract（Extension no-op）；运行期间的 Herdr 操作失败才通过 Link error 返回（`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`）。
+非 Herdr managed pane 中，各 Runtime Adapter 均不注册任何工具、不注入 Communication Contract（no-op）；运行期间的 Herdr 操作失败才通过 Link error 返回（`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`）。
 
 ## 开发
 
@@ -95,6 +100,8 @@ package.json         扩展包元数据
 src/protocol.ts      协议核心：类型、buildEnvelope、错误、COMMUNICATION_CONTRACT
 src/herdr.ts         Herdr CLI 控制层：identity、peers、send、close
 src/pi.ts            Pi Runtime Adapter：契约注入 + 三个工具注册
+src/opencode.ts      OpenCode Runtime Adapter：契约注入 + 三个工具注册
+dist/herdr-link.opencode.js  OpenCode 单文件 bundle（esbuild 构建产物）
 ```
 
 分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` 只做 Extension 接线，无长期状态。
