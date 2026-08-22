@@ -1,7 +1,7 @@
 # Herdr Link Protocol — `herdr-link/1`
 
 > 本文件是 Herdr Link 协议的唯一规范文本（canonical spec）。所有 Runtime Adapter 必须实现本文件定义的语义；任何修改必须先修改本文件。
-> 权威来源：本文档。实现参考：[技术架构蓝图](../docs/Herdr_Link_Technical_Architecture_Blueprint.md)。
+> 设计决策记录保存在本机开发环境，不随协议发布。
 
 ## 1. Protocol Identifier
 

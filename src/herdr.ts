@@ -175,7 +175,15 @@ export async function getSelf(): Promise<string> {
     throw new HerdrLinkError("SELF_UNNAMED", "HERDR_PANE_ID is missing");
   }
 
-  const response = await runFor(["agent", "get", pane], "SELF_UNNAMED");
+  let response: unknown;
+  try {
+    response = await runFor(["agent", "get", pane], "SELF_UNNAMED");
+  } catch (error) {
+    if (error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND") {
+      throw new HerdrLinkError("SELF_UNNAMED", errorDetail(error));
+    }
+    throw error;
+  }
   const name = agentName(response);
   if (!name || !isValidAgentName(name)) {
     throw new HerdrLinkError("SELF_UNNAMED", "current Herdr agent has no valid name");

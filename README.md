@@ -28,20 +28,33 @@ herdr_link_close("worker-a")
 
 ## 安装（Pi Adapter）
 
-将 `src/pi.ts` 作为 Pi Extension 加载，推荐安装到全局扩展目录：
+推荐使用 Pi package 安装到全局扩展目录（所有项目可用）：
 
 ```bash
-# 方式一：全局目录（每个 Pi Agent 自动加载；多文件扩展须用子目录 + index.ts 入口）
+pi install git:github.com/LZHcode1986/herdr-link
+```
+
+仅当前项目安装：
+
+```bash
+pi install -l git:github.com/LZHcode1986/herdr-link
+```
+
+### Development/manual installation
+
+以下方式仅供开发或手动安装场景。将 `src/pi.ts` 作为 Pi Extension 加载；多文件扩展须使用子目录 + `index.ts` 入口：
+
+```bash
+# 方式一：复制到全局扩展目录（开发/手动场景）
 mkdir -p ~/.pi/agent/extensions/herdr-link
 cp src/pi.ts ~/.pi/agent/extensions/herdr-link/index.ts
 cp src/herdr.ts src/protocol.ts ~/.pi/agent/extensions/herdr-link/
 
-# 方式二：启动时显式加载（临时验证用）
+# 方式二：启动时显式加载（临时验证）
 pi --extension /path/to/herdr-link/src/pi.ts
 ```
 
-加载后，Agent 的 system prompt 自动包含 Communication Contract，并获得三个工具：`herdr_link_peers`、`herdr_link_send`、`herdr_link_close`。
-
+安装或加载后，Agent 的 system prompt 自动包含 Communication Contract，并获得三个工具：`herdr_link_peers`、`herdr_link_send`、`herdr_link_close`。
 ## 环境要求
 
 运行环境必须由 Herdr managed pane 提供：
@@ -52,7 +65,7 @@ pi --extension /path/to/herdr-link/src/pi.ts
 | `HERDR_BIN_PATH` | 当前 Herdr binary 路径（CLI wrapper 执行） |
 | `HERDR_PANE_ID` | caller pane，用于解析 self identity |
 
-缺失时工具返回明确错误（`NOT_IN_HERDR` / `SELF_UNNAMED`），不猜测 UI focus。
+非 Herdr managed pane 中，Pi Adapter 不注册任何工具、不注入 Communication Contract（Extension no-op）；运行期间的 Herdr 操作失败才通过 Link error 返回（`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`）。
 
 ## 开发
 

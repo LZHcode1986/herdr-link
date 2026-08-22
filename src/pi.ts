@@ -48,11 +48,9 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link_peers",
     label: "Herdr Link Peers",
     description: "Discover named peers available through the cross-agent communication channel.",
-    promptSnippet: "Use Herdr Link tools to communicate with other agents in this Herdr session.",
+    promptSnippet: "Discover named agents available for Herdr Link communication.",
     promptGuidelines: [
-      "herdr_link_peers discovers agent addresses in this Herdr session.",
-      "herdr_link_peers does not use Herdr CLI, terminal input, pane reads, waits, or Skills for inter-agent messaging.",
-      "herdr_link_peers does not choose, create, schedule, or recycle agents.",
+      "Use herdr_link_peers when you need to discover agent addresses.",
     ],
     parameters: PEERS_PARAMETERS,
     async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
@@ -68,11 +66,10 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link_send",
     label: "Herdr Link Send",
     description: "Send a message to another agent through the cross-agent communication channel.",
-    promptSnippet: "Use Herdr Link tools to communicate with other agents in this Herdr session.",
+    promptSnippet: "Send messages or replies to other Herdr Link agents.",
     promptGuidelines: [
-      "herdr_link_send communicates with other agents; put message content in the message field and set reply_to to the received message id when replying.",
-      "herdr_link_send is the inter-agent messaging channel; do not use Herdr CLI, terminal input, pane reads, waits, or Skills instead.",
-      "herdr_link_send does not choose, create, schedule, or recycle agents.",
+      "Use herdr_link_send to send an inter-agent message.",
+      "Use herdr_link_send with reply_to set to the received message id when replying.",
     ],
     parameters: SEND_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -89,11 +86,9 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link_close",
     label: "Herdr Link Close",
     description: "Close the Herdr pane currently hosting a named agent.",
-    promptSnippet: "Use Herdr Link tools to communicate with other agents in this Herdr session.",
+    promptSnippet: "Close the Herdr pane currently hosting a named agent.",
     promptGuidelines: [
-      "herdr_link_close closes a named agent's pane only when you have already decided to close it.",
-      "herdr_link_close does not use Herdr CLI, terminal input, pane reads, waits, or Skills for inter-agent messaging.",
-      "herdr_link_close does not choose, create, schedule, or recycle agents.",
+      "Use herdr_link_close only after deciding that the named agent's pane should be closed.",
     ],
     parameters: CLOSE_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
