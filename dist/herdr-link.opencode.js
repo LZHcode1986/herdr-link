@@ -222,13 +222,6 @@ async function sendMessage(to, message, reply_to) {
   await runFor(["agent", "prompt", to, JSON.stringify(envelope)], "SEND_FAILED");
   return { status: "sent", id: envelope.id, to };
 }
-async function getPaneAgentName(pane) {
-  const response = await runFor(["agent", "get", pane], "PEER_NOT_FOUND");
-  return agentName(response);
-}
-async function renamePaneAgent(pane, name) {
-  await runFor(["agent", "rename", pane, name], "SELF_UNNAMED");
-}
 async function closeAgentPane(agentName2) {
   assertHerdrEnvironment();
   if (!isValidAgentName(agentName2)) {
@@ -241,119 +234,6 @@ async function closeAgentPane(agentName2) {
   }
   await runFor(["pane", "close", pane], "CLOSE_FAILED");
   return { status: "closed", agent: agentName2 };
-}
-
-// src/opencode-identity.ts
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-var HEAL_INTERVAL_MS = 3e4;
-var NAME_SUFFIXES = ["", "-2", "-3"];
-function stateFilePath() {
-  const dir = process.env.HERDR_LINK_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "herdr-link");
-  return path.join(dir, "opencode-agent-names.json");
-}
-async function readRecords() {
-  try {
-    const parsed = JSON.parse(await readFile(stateFilePath(), "utf8"));
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return {};
-    }
-    const records = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      if (typeof value === "string") records[key] = value;
-    }
-    return records;
-  } catch {
-    return {};
-  }
-}
-async function writeRecord(paneId2, name) {
-  const records = await readRecords();
-  records[paneId2] = name;
-  const file = stateFilePath();
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(records, null, 2)}
-`, "utf8");
-}
-function currentPaneId() {
-  return process.env.HERDR_PANE_ID || void 0;
-}
-function isSelfUnnamed(error) {
-  return error instanceof HerdrLinkError && error.code === "SELF_UNNAMED";
-}
-function isNameTakenError(error) {
-  return error instanceof HerdrLinkError && error.message.includes("agent_name_taken");
-}
-async function renameWithFallback(desired, pane) {
-  let lastError = new HerdrLinkError(
-    "SELF_UNNAMED",
-    `no valid name candidate derived from "${desired}"`
-  );
-  for (const suffix of NAME_SUFFIXES) {
-    const candidate = `${desired}${suffix}`;
-    if (!isValidAgentName(candidate)) continue;
-    try {
-      await renamePaneAgent(pane, candidate);
-      return candidate;
-    } catch (error) {
-      lastError = error;
-      if (!isNameTakenError(error)) break;
-    }
-  }
-  throw lastError;
-}
-async function ensureNamedSelf() {
-  const pane = currentPaneId();
-  if (!pane) {
-    throw new HerdrLinkError("SELF_UNNAMED", "HERDR_PANE_ID is missing");
-  }
-  const current = await getPaneAgentName(pane).catch(() => void 0);
-  if (current) {
-    const records = await readRecords();
-    if (records[pane] !== current) {
-      await writeRecord(pane, current);
-    }
-    return current;
-  }
-  const desired = (await readRecords())[pane];
-  if (!desired) {
-    throw new HerdrLinkError(
-      "SELF_UNNAMED",
-      `current Herdr agent has no valid name and no persisted expectation for pane ${pane}`
-    );
-  }
-  const restored = await renameWithFallback(desired, pane);
-  await writeRecord(pane, restored);
-  return restored;
-}
-var healChain = Promise.resolve();
-function scheduleEnsureNamedSelf() {
-  const next = healChain.then(() => ensureNamedSelf());
-  healChain = next.catch(() => {
-  });
-  return next;
-}
-async function withIdentityHeal(operation) {
-  try {
-    return await operation();
-  } catch (error) {
-    if (!isSelfUnnamed(error)) throw error;
-    await scheduleEnsureNamedSelf();
-    return await operation();
-  }
-}
-var healStarted = false;
-function startIdentityHeal(intervalMs = HEAL_INTERVAL_MS) {
-  if (healStarted) return;
-  healStarted = true;
-  void scheduleEnsureNamedSelf().catch(() => {
-  });
-  const timer = setInterval(() => {
-    void scheduleEnsureNamedSelf().catch(() => {
-    });
-  }, intervalMs);
-  timer.unref?.();
 }
 
 // src/opencode.ts
@@ -381,7 +261,6 @@ var herdrLinkPlugin = async () => {
   if (!isHerdrEnvironment()) {
     return {};
   }
-  startIdentityHeal();
   return {
     tool: {
       herdr_link_peers: tool({
@@ -389,7 +268,7 @@ var herdrLinkPlugin = async () => {
         args: {},
         async execute() {
           try {
-            return jsonResult(await withIdentityHeal(() => listPeers()));
+            return jsonResult(await listPeers());
           } catch (error) {
             rethrowToolError(error);
           }
@@ -404,9 +283,7 @@ var herdrLinkPlugin = async () => {
         },
         async execute(args) {
           try {
-            const envelope = await withIdentityHeal(
-              () => sendMessage(args.to, args.message, args.reply_to)
-            );
+            const envelope = await sendMessage(args.to, args.message, args.reply_to);
             return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
           } catch (error) {
             rethrowToolError(error);
@@ -420,7 +297,7 @@ var herdrLinkPlugin = async () => {
         },
         async execute(args) {
           try {
-            await withIdentityHeal(() => closeAgentPane(args.agent));
+            await closeAgentPane(args.agent);
             return jsonResult({ status: "closed", agent: args.agent });
           } catch (error) {
             rethrowToolError(error);

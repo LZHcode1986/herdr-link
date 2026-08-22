@@ -70,10 +70,6 @@ cp dist/herdr-link.opencode.js ~/.config/opencode/plugins/herdr-link.js
 
 部署或重启 opencode 后，agent 获得相同三个工具与 Communication Contract 注入（`experimental.chat.system.transform`）。
 
-### 身份自愈（OpenCode 专属）
-
-Herdr 对 opencode pane 的 agent 登记会在 pane 内进程组变化时整体重置并丢失名字（重启 opencode 后必现）。插件会自动把当前 pane 的期望名持久化在 `~/.local/state/herdr-link/opencode-agent-names.json` 并在三个时机自动恢复：plugin 启动校验、工具调用遇到 `SELF_UNNAMED` 时先恢复再重试一次、每 30 秒兜底检查。若原名已被其他 agent 占用，则回退为 `<name>-2` 等后缀并更新记录。因此用 `herdr agent rename <pane> <name>` 改名一次即可长期生效；清名到自愈之间的短暂窗口内发来的消息仍可能投递失败。
-
 ## 环境要求
 
 运行环境必须由 Herdr managed pane 提供：

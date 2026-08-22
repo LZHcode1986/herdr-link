@@ -1,7 +1,6 @@
 import { tool, type Plugin } from "@opencode-ai/plugin";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
-import { startIdentityHeal, withIdentityHeal } from "./opencode-identity.ts";
 import { COMMUNICATION_CONTRACT, HerdrLinkError } from "./protocol.ts";
 
 const HERDR_LINK_TOOL_DESCRIPTION = {
@@ -38,8 +37,6 @@ export const herdrLinkPlugin: Plugin = async () => {
     return {};
   }
 
-  startIdentityHeal();
-
   return {
     tool: {
       herdr_link_peers: tool({
@@ -47,7 +44,7 @@ export const herdrLinkPlugin: Plugin = async () => {
         args: {},
         async execute() {
           try {
-            return jsonResult(await withIdentityHeal(() => listPeers()));
+            return jsonResult(await listPeers());
           } catch (error) {
             rethrowToolError(error);
           }
@@ -62,9 +59,7 @@ export const herdrLinkPlugin: Plugin = async () => {
         },
         async execute(args) {
           try {
-            const envelope = await withIdentityHeal(() =>
-              sendMessage(args.to, args.message, args.reply_to),
-            );
+            const envelope = await sendMessage(args.to, args.message, args.reply_to);
             return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
           } catch (error) {
             rethrowToolError(error);
@@ -78,7 +73,7 @@ export const herdrLinkPlugin: Plugin = async () => {
         },
         async execute(args) {
           try {
-            await withIdentityHeal(() => closeAgentPane(args.agent));
+            await closeAgentPane(args.agent);
             return jsonResult({ status: "closed", agent: args.agent });
           } catch (error) {
             rethrowToolError(error);
