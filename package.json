@@ -1,0 +1,25 @@
+{
+  "name": "herdr-link",
+  "version": "0.1.0",
+
+  "pi": {
+    "extensions": ["./src/pi.ts"]
+  },
+
+  "keywords": ["pi-package", "herdr", "agent-interop"],
+  "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. V1: Pi Runtime Adapter.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

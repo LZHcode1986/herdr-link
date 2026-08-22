@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.pi/subagents.json
+.agents/
+.docs/
+.pi/
+.opencode/
+test/
+tsconfig.json
+package-lock.json
