@@ -108,6 +108,13 @@ running in the same Herdr session.
   5. 如果关闭的是调用 Agent 自己的 pane，进程可能在工具响应完整返回前终止；调用方不得依赖 self-close 的返回值完成后续业务动作；
   6. Herdr 返回失败时直接失败，不猜测替代目标。
 
+### 4.4 工具命名呈现（Tool Name Presentation）
+
+- 工具的 canonical 名固定为 `herdr_link_peers` / `herdr_link_send` / `herdr_link_close`；
+- Runtime 可因宿主机制以带前缀的形式呈现工具（如 MCP 宿主的 `mcp__<server>__<tool>`）；呈现名的结尾必须是完整 canonical 名，保证映射确定性；
+- 注入的 Communication Contract 必须同时声明该 Runtime 的实际呈现名，使模型无需猜测即可正确调用；
+- 无论呈现名如何，入参/出参 schema、错误语义与调用时序约束完全一致。
+
 ## 5. Peer 地址模型
 
 - 唯一公开地址是 Herdr Agent Name（`[a-z][a-z0-9_-]{0,31}`，live 全局唯一）。
@@ -125,7 +132,7 @@ running in the same Herdr session.
 3. **Expose Send**：提供 `herdr_link_send` 等价能力；
 4. **Expose Close**：提供 `herdr_link_close` 等价能力。
 
-Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool system 实现；不强制实现语言。V1 不创建统一 Adapter Framework（无 BaseAdapter / registry / plugin loader / daemon）。
+Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool system 实现；不强制实现语言。V1 不创建统一 Adapter Framework（无 BaseAdapter / registry / plugin loader / daemon）。工具命名呈现须符合 §4.4。
 
 ## 7. 错误模型
 
