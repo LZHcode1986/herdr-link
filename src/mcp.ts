@@ -304,10 +304,16 @@ export async function runStdioServer(
   }
 }
 
-/** MCP presentation name for a canonical tool (PROTOCOL.md §4.4): the full canonical name is always the suffix. */
+/**
+ * Host-facing presented name for a canonical tool (PROTOCOL.md §4.4): the full
+ * canonical name is always the suffix. The namespace is host-specific (e.g.
+ * "herdr_link" for the Codex/AGY wirings) and is deliberately NOT defaulted —
+ * serverInfo.name and the host tool namespace are different concerns, so callers
+ * must state explicitly which namespace a contract declares.
+ */
 export function mcpPresentedToolName(
   canonicalName: CanonicalToolName,
-  serverName: string = MCP_SERVER_NAME,
+  serverName: string,
 ): string {
   return `mcp__${serverName}__${canonicalName}`;
 }
@@ -315,9 +321,10 @@ export function mcpPresentedToolName(
 /**
  * Contract text for MCP-hosted runtimes: the canonical Communication Contract
  * plus the §4.4 appendix declaring this runtime's actual presented names, so
- * the model never has to guess which spelling to call.
+ * the model never has to guess which spelling to call. `serverName` is the
+ * host tool namespace (see mcpPresentedToolName) and must be explicit.
  */
-export function buildMcpCommunicationContract(serverName: string = MCP_SERVER_NAME): string {
+export function buildMcpCommunicationContract(serverName: string): string {
   const [peers, send, close] = HERDR_LINK_TOOLS.map((name) =>
     mcpPresentedToolName(name, serverName),
   );
