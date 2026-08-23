@@ -3,7 +3,7 @@
 **Herdr Link 是运行在 Herdr 会话中的跨 Agent 互操作层**：每种 Agent Runtime 通过自己的 Adapter 自动获得统一的通信契约，并使用相同的 peer discovery、message send/reply 与 pane close 语义。
 
 - **协议**：`herdr-link/1`（唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)）
-- **Runtime Adapter**：Pi（Extension API）、OpenCode（Plugin，单文件 bundle）
+- **Runtime Adapter**：Pi（Extension API）、OpenCode（Plugin，单文件 bundle）、共享 stdio MCP server（Claude Code / Codex / AGY，见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)）
 - **设计文档**：保存在本机开发环境的 `.docs/` 目录，不作为发布物。
 
 Herdr Link 不负责决定 Agent 应该做什么，也不负责 Agent 的创建、模型选择、调度、复用策略或工作流状态。它只提供跨 Agent 协作所需的最小公共能力。
@@ -70,6 +70,16 @@ cp dist/herdr-link.opencode.js ~/.config/opencode/plugins/herdr-link.js
 
 部署或重启 opencode 后，agent 获得相同三个工具与 Communication Contract 注入（`experimental.chat.system.transform`）。
 
+## 安装（共享 MCP Server：Claude Code / Codex / AGY）
+
+三个无原生自定义工具注册面的 Runtime 共用同一个零依赖 stdio MCP server：
+
+```bash
+npm run build:mcp   # 产出 dist/herdr-link.mcp.js
+```
+
+MCP 注册配置与各 Runtime 的契约注入通道（Claude Code = launcher 参数、Codex = SessionStart hook、AGY = PreInvocation hook）见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)。工具以 `mcp__herdr-link__herdr_link_peers` 等前缀名呈现（协议 §4.4），入参/出参与错误语义同其余 Adapter 完全一致；非 Herdr 环境 tools/list 返回空集，模型无感知。
+
 ## 环境要求
 
 运行环境必须由 Herdr managed pane 提供：
@@ -97,10 +107,13 @@ src/protocol.ts      协议核心：类型、buildEnvelope、错误、COMMUNICAT
 src/herdr.ts         Herdr CLI 控制层：identity、peers、send、close
 src/pi.ts            Pi Runtime Adapter：契约注入 + 三个工具注册
 src/opencode.ts      OpenCode Runtime Adapter：契约注入 + 三个工具注册
+src/mcp.ts           共享 stdio MCP server（Claude Code / Codex / AGY）：JSON-RPC + 三工具分发
+docs/mcp-wiring.md   MCP Adapter 三家 Runtime 的注册与契约注入接线指南
 dist/herdr-link.opencode.js  OpenCode 单文件 bundle（esbuild 构建产物）
+dist/herdr-link.mcp.js       共享 MCP server 单文件 bundle（esbuild 构建产物）
 ```
 
-分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` 只做 Extension 接线，无长期状态。
+分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线（工具注册、契约注入、JSON-RPC 编解码），无长期状态。
 
 ## 错误模型
 

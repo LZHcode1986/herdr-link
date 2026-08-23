@@ -1,6 +1,7 @@
 node_modules/
 dist/*
 !dist/herdr-link.opencode.js
+!dist/herdr-link.mcp.js
 *.log
 .pi/subagents.json
 .agents/

@@ -7,7 +7,7 @@
   },
 
   "keywords": ["pi-package", "herdr", "agent-interop"],
-  "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. V1: Pi + OpenCode Runtime Adapters.",
+  "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. V1: Pi / OpenCode native adapters + shared stdio MCP server (Claude Code, Codex, AGY).",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -17,7 +17,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "build:opencode": "esbuild src/opencode.ts --bundle --format=esm --platform=node --external:@opencode-ai/plugin --outfile=dist/herdr-link.opencode.js"
+    "build:opencode": "esbuild src/opencode.ts --bundle --format=esm --platform=node --external:@opencode-ai/plugin --outfile=dist/herdr-link.opencode.js",
+    "build:mcp": "esbuild src/mcp.ts --bundle --format=esm --platform=node --target=node22 --outfile=dist/herdr-link.mcp.js"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
