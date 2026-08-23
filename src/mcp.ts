@@ -305,11 +305,11 @@ export async function runStdioServer(
 }
 
 /**
- * Host-facing presented name for a canonical tool (PROTOCOL.md §4.4): the full
- * canonical name is always the suffix. The namespace is host-specific (e.g.
- * "herdr_link" for the Codex/AGY wirings) and is deliberately NOT defaulted —
- * serverInfo.name and the host tool namespace are different concerns, so callers
- * must state explicitly which namespace a contract declares.
+ * Host-facing presented name for a canonical tool on prefix-style hosts (PROTOCOL.md
+ * §4.4): the full canonical name is always the suffix. The namespace is
+ * host-specific ("herdr_link" for the Codex wiring) and deliberately NOT
+ * defaulted — serverInfo.name and the host tool namespace are different
+ * concerns, so callers must state explicitly which namespace a contract declares.
  */
 export function mcpPresentedToolName(
   canonicalName: CanonicalToolName,
@@ -318,22 +318,38 @@ export function mcpPresentedToolName(
   return `mcp__${serverName}__${canonicalName}`;
 }
 
-/**
- * Contract text for MCP-hosted runtimes: the canonical Communication Contract
- * plus the §4.4 appendix declaring this runtime's actual presented names, so
- * the model never has to guess which spelling to call. `serverName` is the
- * host tool namespace (see mcpPresentedToolName) and must be explicit.
- */
-export function buildMcpCommunicationContract(serverName: string): string {
-  const [peers, send, close] = HERDR_LINK_TOOLS.map((name) =>
-    mcpPresentedToolName(name, serverName),
-  );
-  return `${COMMUNICATION_CONTRACT}
+/** Shared canonical part of every Communication Contract variant (§3). */
+function contractWithAppendix(appendix: string): string {
+  return `${COMMUNICATION_CONTRACT}\n\n${appendix}`;
+}
 
-In this runtime these tools are presented under MCP-prefixed names:
-- herdr_link_peers -> ${peers}
-- herdr_link_send -> ${send}
-- herdr_link_close -> ${close}`;
+/**
+ * Contract text for prefix-style MCP hosts (e.g. Codex): tools are exposed as
+ * independent `mcp__<namespace>__<canonical>` functions. `namespace` is the
+ * host tool namespace and must be explicit.
+ */
+export function buildMcpPrefixedCommunicationContract(namespace: string): string {
+  const [peers, send, close] = HERDR_LINK_TOOLS.map((name) =>
+    mcpPresentedToolName(name, namespace),
+  );
+  return contractWithAppendix(
+    `In this runtime these tools are presented under MCP-prefixed names:\n- herdr_link_peers -> ${peers}\n- herdr_link_send -> ${send}\n- herdr_link_close -> ${close}`,
+  );
+}
+
+/**
+ * Contract text for wrapper-style MCP hosts (e.g. AGY's call_mcp_tool): the
+ * model invokes one native wrapper carrying ServerName/ToolName/Arguments
+ * instead of per-tool functions (PROTOCOL.md §4.4 wrapper form). Both values
+ * must be explicit.
+ */
+export function buildMcpWrapperCommunicationContract(
+  wrapperName: string,
+  serverName: string,
+): string {
+  return contractWithAppendix(
+    `In this runtime Herdr Link MCP tools are invoked through ${wrapperName}.\n\nUse:\n- ServerName: "${serverName}"\n- ToolName: "herdr_link_peers", "herdr_link_send", or "herdr_link_close"\n- Arguments: the canonical input object for that Herdr Link tool`,
+  );
 }
 
 /** True when this file is the process entry point (spawned by an MCP host), false when imported (tests). */

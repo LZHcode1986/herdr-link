@@ -434,19 +434,34 @@ async function runStdioServer(handler) {
     return { jsonrpc: "2.0", id: null, error: { code: PARSE_ERROR, message: "Parse error" } };
   }
 }
-function mcpPresentedToolName(canonicalName, serverName = MCP_SERVER_NAME) {
+function mcpPresentedToolName(canonicalName, serverName) {
   return `mcp__${serverName}__${canonicalName}`;
 }
-function buildMcpCommunicationContract(serverName = MCP_SERVER_NAME) {
-  const [peers, send, close] = HERDR_LINK_TOOLS.map(
-    (name) => mcpPresentedToolName(name, serverName)
-  );
+function contractWithAppendix(appendix) {
   return `${COMMUNICATION_CONTRACT}
 
-In this runtime these tools are presented under MCP-prefixed names:
+${appendix}`;
+}
+function buildMcpPrefixedCommunicationContract(namespace) {
+  const [peers, send, close] = HERDR_LINK_TOOLS.map(
+    (name) => mcpPresentedToolName(name, namespace)
+  );
+  return contractWithAppendix(
+    `In this runtime these tools are presented under MCP-prefixed names:
 - herdr_link_peers -> ${peers}
 - herdr_link_send -> ${send}
-- herdr_link_close -> ${close}`;
+- herdr_link_close -> ${close}`
+  );
+}
+function buildMcpWrapperCommunicationContract(wrapperName, serverName) {
+  return contractWithAppendix(
+    `In this runtime Herdr Link MCP tools are invoked through ${wrapperName}.
+
+Use:
+- ServerName: "${serverName}"
+- ToolName: "herdr_link_peers", "herdr_link_send", or "herdr_link_close"
+- Arguments: the canonical input object for that Herdr Link tool`
+  );
 }
 function invokedDirectly() {
   const entry = process.argv[1];
@@ -468,7 +483,8 @@ export {
   MCP_SERVER_VERSION,
   METHOD_NOT_FOUND,
   PARSE_ERROR,
-  buildMcpCommunicationContract,
+  buildMcpPrefixedCommunicationContract,
+  buildMcpWrapperCommunicationContract,
   createRequestHandler,
   isHerdrEnvironment,
   mcpPresentedToolName,
