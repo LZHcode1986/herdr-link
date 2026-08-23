@@ -78,7 +78,7 @@ cp dist/herdr-link.opencode.js ~/.config/opencode/plugins/herdr-link.js
 npm run build:mcp   # 产出 dist/herdr-link.mcp.js
 ```
 
-MCP 注册配置与各 Runtime 的契约注入通道（Claude Code = launcher 参数、Codex = SessionStart hook、AGY = PreInvocation hook）见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)。MCP server 名为 `herdr_link`，工具以 `mcp__herdr_link__herdr_link_peers` 等前缀名呈现（协议 §4.4；Codex 须按 docs 指引显式 `env_vars` 转发 HERDR_*），入参/出参与错误语义同其余 Adapter 完全一致；非 Herdr 环境 tools/list 返回空集，模型无感知。
+MCP 注册配置与各 Runtime 的契约注入通道（Claude Code = launcher 参数、Codex = SessionStart hook、AGY = PreInvocation hook）见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)。host 注册 namespace 为 `herdr_link`（serverInfo.name 为 `herdr-link`，两者不同）：Codex 以 `mcp__herdr_link__<tool>` 前缀函数呈现；AGY 经原生 `call_mcp_tool` wrapper 以 `ServerName="herdr_link"` + canonical `ToolName` 调用（协议 §4.4；Codex 须按 docs 指引显式 `env_vars` 转发 HERDR_*），入参/出参与错误语义同其余 Adapter 完全一致；非 Herdr 环境 tools/list 返回空集，模型无感知。
 
 ## 环境要求
 

@@ -27,9 +27,11 @@ BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 
 **命名约束**：下文 Codex / AGY 配置中 server 名统一为 `herdr_link`（下划线；连字符名在 codex code-mode 工具面有兼容性问题），呈现名 `mcp__herdr_link__<tool>` 与第 1 节契约附录一一对应。若改名，须同步重新生成附录（`src/mcp.ts` 的 `buildMcpCommunicationContract(serverName)`）。
 
-## 1. 契约注入文本（三个 Runtime 通用）
+## 1. 契约注入文本（canonical 共享 + 按 Runtime 追加呈现附录）
 
-以下文本即 `buildMcpCommunicationContract()` 的输出（canonical Contract + §4.4 呈现名附录），按各 Runtime 的注入通道原样投递：
+契约 = **canonical 9 条（三家共享）** + **Runtime Presentation Appendix**（按该 Runtime 的实际呈现形态追加，PROTOCOL §4.4）。不要让 wrapper 型 Runtime 复用 prefix 附录，反之亦然。
+
+### 1.1 canonical 文本（所有 MCP Runtime 共享）
 
 ```text
 Herdr Link is the standard interoperability channel between agents
@@ -44,19 +46,36 @@ running in the same Herdr session.
 7. Never use a raw pane id or UI focus as an inter-agent address.
 8. Do not use Herdr CLI, terminal input, pane reads, waits, or Skills for normal inter-agent messaging.
 9. Herdr Link does not choose, create, configure, schedule, or recycle agents.
+```
 
+### 1.2 Codex 附录（prefix 型，`buildMcpPrefixedCommunicationContract("herdr_link")`）
+
+```text
 In this runtime these tools are presented under MCP-prefixed names:
 - herdr_link_peers -> mcp__herdr_link__herdr_link_peers
 - herdr_link_send -> mcp__herdr_link__herdr_link_send
 - herdr_link_close -> mcp__herdr_link__herdr_link_close
 ```
 
-呈现名由 MCP server 名决定（`mcp__<server>__<tool>`）。**Codex / AGY 实测均须用下划线 server 名 `herdr_link`**，上块即对应文本；若改名，附录三行须同步重新生成（`buildMcpCommunicationContract(serverName)`）。
-注意：每个 Runtime **只走一条**契约通道，避免重复注入（launcher 与 hook 并存会双份）。
+### 1.3 AGY 附录（wrapper 型，`buildMcpWrapperCommunicationContract("call_mcp_tool", "herdr_link")`）
 
+AGY 的 model-facing 调用是单一原生 wrapper 携带 ServerName/ToolName/Arguments（transcript 实证：`call_3798736 → call_mcp_tool → {"Arguments":{},"ServerName":"herdr_link","ToolName":"herdr_link_peers"}`），**不是** `mcp__` 前缀独立函数：
+
+```text
+In this runtime Herdr Link MCP tools are invoked through call_mcp_tool.
+
+Use:
+- ServerName: "herdr_link"
+- ToolName: "herdr_link_peers", "herdr_link_send", or "herdr_link_close"
+- Arguments: the canonical input object for that Herdr Link tool
+```
+
+两个生成函数的参数均**无默认值**——serverInfo.name（`herdr-link`）与 host tool namespace（`herdr_link`）是两个概念，调用方必须显式声明。
+注意：每个 Runtime **只走一条**契约通道，避免重复注入（launcher 与 hook 并存会双份）。
 ## 2. Claude Code（已封存，暂缓接入）
 
 > **状态：SUSPENDED（2026-08-23）**——CC 侧模型出现问题，暂不接入；以下样例保留供恢复时直接使用。共享 MCP server（`src/mcp.ts` / `dist/herdr-link.mcp.js`）为三家属一，不含 CC 专属代码，无需改动。
+> **Archived wiring snapshot**：本节为封存时的原样快照（server key `herdr-link` 与 allowlist namespace 未核对一致）；恢复 CC 支持时须重新验证呈现 namespace 再使用。
 
 注册 MCP server（二选一）：
 
@@ -79,7 +98,7 @@ In this runtime these tools are presented under MCP-prefixed names:
 herdr agent start <name> --kind claude --pane <pane_id> -- \
   --mcp-config /absolute/path/to/herdr-link.mcp.json \
   --allowedTools "mcp__herdr_link__*" \
-  --append-system-prompt "<第 1 节契约文本>"
+  --append-system-prompt "<第 1.1 节 canonical 文本 + 第 1.2 节 Codex 附录>"
 ```
 
 要点：
@@ -127,7 +146,9 @@ env_vars = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
 
 cat <<'CONTRACT'
-<第 1 节契约文本>
+<第 1.1 节 canonical 文本>
+
+<第 1.2 节 Codex prefix 附录>
 CONTRACT
 ```
 
@@ -175,7 +196,9 @@ cat >/dev/null 2>&1 || true   # 吞掉 hook stdin 的上下文 JSON
 [ -n "${HERDR_PANE_ID:-}" ] || { printf '{}'; exit 0; }
 
 CONTRACT=$(cat <<'EOF'
-<第 1 节契约文本>
+<第 1.1 节 canonical 文本>
+
+<第 1.3 节 AGY wrapper 附录>
 EOF
 )
 
