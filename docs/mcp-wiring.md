@@ -7,7 +7,7 @@
 ```text
 dist/herdr-link.mcp.js   单文件 bundle（esbuild 产出，行分隔 JSON-RPC over stdio）
 工具面                    herdr_link_peers / herdr_link_send / herdr_link_close（canonical 名）
-呈现名                    mcp__herdr-link__<tool>（宿主前缀，结尾必须是完整 canonical 名，PROTOCOL §4.4）
+呈现名                    mcp__<server>__<tool>（Codex/AGY 实测 server 名用 herdr_link，见 §3/§4）
 错误语义                  五个 Link error 一律 isError:true + "CODE: detail" 文本（PROTOCOL §7）
 零副作用                  非 Herdr 环境 tools/list 返回 []，模型无感知
 契约注入                  Claude Code = launcher --append-system-prompt；
@@ -25,7 +25,7 @@ BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 
 运行只依赖 Node ≥ 22。server 由各 Runtime 在 Herdr managed pane 内拉起，自动继承 `HERDR_ENV` / `HERDR_BIN_PATH` / `HERDR_PANE_ID`。
 
-**命名约束**：下文所有配置中 server 名必须叫 `herdr-link`——呈现名 `mcp__herdr-link__<tool>` 与注入的契约文本一一对应。若改名，必须同步改契约附录（由 `src/mcp.ts` 的 `buildMcpCommunicationContract(serverName)` 生成）。
+**命名约束**：下文 Codex / AGY 配置中 server 名统一为 `herdr_link`（下划线；连字符名在 codex code-mode 工具面有兼容性问题），呈现名 `mcp__herdr_link__<tool>` 与第 1 节契约附录一一对应。若改名，须同步重新生成附录（`src/mcp.ts` 的 `buildMcpCommunicationContract(serverName)`）。
 
 ## 1. 契约注入文本（三个 Runtime 通用）
 
@@ -46,14 +46,17 @@ running in the same Herdr session.
 9. Herdr Link does not choose, create, configure, schedule, or recycle agents.
 
 In this runtime these tools are presented under MCP-prefixed names:
-- herdr_link_peers -> mcp__herdr-link__herdr_link_peers
-- herdr_link_send -> mcp__herdr-link__herdr_link_send
-- herdr_link_close -> mcp__herdr-link__herdr_link_close
+- herdr_link_peers -> mcp__herdr_link__herdr_link_peers
+- herdr_link_send -> mcp__herdr_link__herdr_link_send
+- herdr_link_close -> mcp__herdr_link__herdr_link_close
 ```
 
+呈现名由 MCP server 名决定（`mcp__<server>__<tool>`）。**Codex / AGY 实测均须用下划线 server 名 `herdr_link`**，上块即对应文本；若改名，附录三行须同步重新生成（`buildMcpCommunicationContract(serverName)`）。
 注意：每个 Runtime **只走一条**契约通道，避免重复注入（launcher 与 hook 并存会双份）。
 
-## 2. Claude Code
+## 2. Claude Code（已封存，暂缓接入）
+
+> **状态：SUSPENDED（2026-08-23）**——CC 侧模型出现问题，暂不接入；以下样例保留供恢复时直接使用。共享 MCP server（`src/mcp.ts` / `dist/herdr-link.mcp.js`）为三家属一，不含 CC 专属代码，无需改动。
 
 注册 MCP server（二选一）：
 
@@ -87,14 +90,14 @@ herdr agent start <name> --kind claude --pane <pane_id> -- \
 
 ## 3. Codex
 
-`~/.codex/config.toml` 注册（stdio 无需实验开关）：
+`~/.codex/config.toml` 注册（stdio 无需实验开关）。**`env_vars` 转发必须配置**：codex 默认不过滤但也不透传 `HERDR_*` 给 MCP 子进程，缺失时本 server 的零副作用门控会判定「非 Herdr」而返回空工具集（2026-08-23 实测确认）；server 名须用下划线 `herdr_link`——连字符名在 code-mode 工具面存在兼容性问题：
 
 ```toml
-[mcp_servers.herdr-link]
+[mcp_servers.herdr_link]
 command = "node"
 args = ["/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"]
+env_vars = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]
 ```
-
 契约注入走 SessionStart hook（需 `[features] hooks = true`）。`~/.codex/hooks.json`：
 
 ```json
@@ -135,7 +138,7 @@ CONTRACT
 ```json
 {
   "mcpServers": {
-    "herdr-link": {
+    "herdr_link": {
       "command": "node",
       "args": ["/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"]
     }
@@ -202,3 +205,15 @@ Herdr managed pane 内同一命令应列出三个 canonical 名工具；对不�
 - 工具失败是本地 tool failure：`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`，一律 `isError:true` 文本返回，进程不崩溃、不自动重试、不 fallback；
 - server 只调用 `agent get` / `agent list` / `agent prompt` / `pane close` 四个 CLI 面，argv 数组执行，无 shell；
 - 不提供 agent 创建/调度/回收等任何 Non-goals 能力；worker 生命周期仍由调用方决定。
+
+## 7. 已知坑（2026-08-23 Codex/AGY 真机实测）
+
+| # | 现象 | 根因 | 处理 |
+|---|---|---|---|
+| 1 | Codex 下工具"可见但调用报 `tools.mcp__… is not a function`"，或 tools/list 悄悄返回空集 | codex 不透传 `HERDR_*` 给 MCP 子进程，门控判定非 Herdr → 空工具集 | config.toml 配 `env_vars = ["HERDR_ENV","HERDR_BIN_PATH","HERDR_PANE_ID","HERDR_SOCKET_PATH"]`（§3） |
+| 2 | Codex 首次加载 hook / MCP server 无效果 | 新 hook 与 MCP server 均需 review 批准 | 在 TUI 中批准；`config.toml` 会落盘 `[hooks.state] trusted_hash`；MCP 配置变更后必须**完全重启** codex 实例（老实例不会重连） |
+| 3 | 排障时确认 MCP 握手是否发生 | codex 的 sqlite 日志难以定位 stdio 流量 | 把 config 指向 `scripts/mcp-probe.mjs`（双向 tee 到 `/tmp/mcp-probe.log`）抓原始 JSON-RPC |
+| 4 | Herdr pane 内进程存活但 agent 名登记丢失（`agent_pane_busy` / `SELF_UNNAMED`） | Herdr watcher 对 stale pgid 的误清名（同 OpenCode 重启丢名问题） | 运维恢复：`herdr agent rename <pane_id> <name>` |
+| 5 | AGY hooks.json 写顶层 `"PreInvocation"` 不生效 | AGY 格式为按集成名分组：`{"<name>": {"PreInvocation": [...]}}`，多组同名事件顺序合并 | 用独立组名（如 `"herdr-link"`），与 herdr 官方集成组并存 |
+
+E2E 记录（本机 wH workspace）：Codex TUI 与 AGY 各自完成 peers → send(reply_to 关联) → brain 收 envelope 全闭环；错误路径 `PEER_NOT_FOUND` isError 文本透传实测一致；`herdr_link_close` 实测返回 `{status:"closed",agent}`。

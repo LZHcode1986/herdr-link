@@ -3,7 +3,7 @@
 **Herdr Link 是运行在 Herdr 会话中的跨 Agent 互操作层**：每种 Agent Runtime 通过自己的 Adapter 自动获得统一的通信契约，并使用相同的 peer discovery、message send/reply 与 pane close 语义。
 
 - **协议**：`herdr-link/1`（唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)）
-- **Runtime Adapter**：Pi（Extension API）、OpenCode（Plugin，单文件 bundle）、共享 stdio MCP server（Claude Code / Codex / AGY，见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)）
+- **Runtime Adapter**：Pi（Extension API）、OpenCode（Plugin，单文件 bundle）、共享 stdio MCP server（Codex / AGY；Claude Code 接线样例已封存待恢复，见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)）
 - **设计文档**：保存在本机开发环境的 `.docs/` 目录，不作为发布物。
 
 Herdr Link 不负责决定 Agent 应该做什么，也不负责 Agent 的创建、模型选择、调度、复用策略或工作流状态。它只提供跨 Agent 协作所需的最小公共能力。
@@ -70,7 +70,7 @@ cp dist/herdr-link.opencode.js ~/.config/opencode/plugins/herdr-link.js
 
 部署或重启 opencode 后，agent 获得相同三个工具与 Communication Contract 注入（`experimental.chat.system.transform`）。
 
-## 安装（共享 MCP Server：Claude Code / Codex / AGY）
+## 安装（共享 MCP Server：Codex / AGY；Claude Code 已封存）
 
 三个无原生自定义工具注册面的 Runtime 共用同一个零依赖 stdio MCP server：
 
