@@ -111,9 +111,9 @@ running in the same Herdr session.
 ### 4.4 工具命名呈现（Tool Name Presentation）
 
 - 工具的 canonical 名固定为 `herdr_link_peers` / `herdr_link_send` / `herdr_link_close`；
-- Runtime 可因宿主机制以带前缀的形式呈现工具（如 MCP 宿主的 `mcp__<server>__<tool>`）；呈现名的结尾必须是完整 canonical 名，保证映射确定性；
-- 注入的 Communication Contract 必须同时声明该 Runtime 的实际呈现名，使模型无需猜测即可正确调用；
-- 无论呈现名如何，入参/出参 schema、错误语义与调用时序约束完全一致。
+- Runtime 可因宿主机制以不同形态呈现工具：带前缀的独立工具（如 MCP 宿主的 `mcp__<server>__<tool>`，呈现名的结尾必须是完整 canonical 名），或 wrapper 形式（如 AGY 的 `ServerName`/`ToolName` 参数化调用，`ToolName` 即 canonical 名）；无论哪种形态，呈现层与 canonical 名之间必须有确定性映射；
+- 注入的 Communication Contract 必须同时声明该 Runtime 的实际呈现方式（前缀型写明完整呈现名；wrapper 型写明 server/tool 参数取值），使模型无需猜测即可正确调用；
+- 无论呈现形态如何，入参/出参 schema、错误语义与调用时序约束完全一致。
 
 ## 5. Peer 地址模型
 
