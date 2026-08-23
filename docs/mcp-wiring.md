@@ -23,7 +23,7 @@ npm install && npm run build:mcp
 BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 ```
 
-运行只依赖 Node ≥ 22。server 由各 Runtime 在 Herdr managed pane 内拉起，自动继承 `HERDR_ENV` / `HERDR_BIN_PATH` / `HERDR_PANE_ID`。
+运行只依赖 Node ≥ 22。server 由各 Runtime 在 Herdr managed pane 内拉起；**`HERDR_*` 环境变量是否透传给 MCP 子进程由各 Runtime 决定**——Codex 必须显式 `env_vars` 转发（§3），AGY 实测原生透传（§4），其余 Runtime 接入时先实测。
 
 **命名约束**：下文 Codex / AGY 配置中 server 名统一为 `herdr_link`（下划线；连字符名在 codex code-mode 工具面有兼容性问题），呈现名 `mcp__herdr_link__<tool>` 与第 1 节契约附录一一对应。若改名，须同步重新生成附录（`src/mcp.ts` 的 `buildMcpCommunicationContract(serverName)`）。
 
@@ -78,13 +78,13 @@ In this runtime these tools are presented under MCP-prefixed names:
 ```bash
 herdr agent start <name> --kind claude --pane <pane_id> -- \
   --mcp-config /absolute/path/to/herdr-link.mcp.json \
-  --allowedTools "mcp__herdr-link__*" \
+  --allowedTools "mcp__herdr_link__*" \
   --append-system-prompt "<第 1 节契约文本>"
 ```
 
 要点：
 
-- **权限 allowlist 必配**（`--allowedTools "mcp__herdr-link__*"`），否则 worker 卡在权限确认上；
+- **权限 allowlist 必配**（`--allowedTools "mcp__herdr_link__*"`），否则 worker 卡在权限确认上；
 - 契约经 `--append-system-prompt` 进入系统提示，跨 compaction 存活；不要用会整体替换默认提示的 `--system-prompt`；
 - 不要再叠加 SessionStart/UserPromptSubmit hook 或 CLAUDE.md 注入同一契约（去重原则）。
 
@@ -146,23 +146,23 @@ CONTRACT
 }
 ```
 
-契约注入以 PreInvocation `ephemeralMessage` hook 为主通道（动态门禁；静态 Rules 无法条件化，只能作辅助，否则非 Herdr 会话也会被注入）。hooks 配置：
+契约注入以 PreInvocation `ephemeralMessage` hook 为主通道（动态门禁；静态 Rules 无法条件化，只能作辅助，否则非 Herdr 会话也会被注入）。实测注记（2026-08-23 transcript 取证）：AGY 的 model-facing MCP 调用是 **wrapper 形态**——`ServerName:"herdr_link"` + `ToolName:"herdr_link_send"` 参数化调用（非 `mcp__` 前缀独立函数），符合协议 §4.4 的 wrapper 条款；PreInvocation 注入的契约文本已在会话 trajectory 中取证确认。hooks 配置：
 
 ```json
 {
-  "PreInvocation": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "bash '/absolute/path/to/herdr-link-agy-contract.sh'",
-          "timeout": 10
-        }
-      ]
-    }
-  ]
+  "herdr-link": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "bash '/absolute/path/to/herdr-link-agy-contract.sh'",
+        "timeout": 10
+      }
+    ]
+  }
 }
 ```
+
+格式要点：顶层键是**集成名**（可与 herdr 官方集成的 `"herdr"` 组并存，互不覆盖）；`PreInvocation` 的 handler **直接平铺在事件数组里**——没有 `"hooks"` wrapper（那是 `PreToolUse`/`PostToolUse` 这类 matcher 事件的结构）。写成顶层 `"PreInvocation"` 或嵌套 `"hooks"` 都不会生效。
 
 `herdr-link-agy-contract.sh`（非 Herdr 输出 `{}`，零字符注入）：
 
