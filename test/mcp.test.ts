@@ -185,6 +185,7 @@ test("MCP server request handler", async (t) => {
     assert.match(tools[0]!.description as string, /activate/i);
     assert.match(tools[0]!.description as string, /only when the user explicitly asks to use Herdr/);
     assert.match(tools[0]!.description as string, /handling an inbound Herdr Link message/);
+    assert.doesNotMatch(tools[0]!.description as string, /Use Herdr Link, not raw Herdr CLI/);
     assert.equal((tools[0]!.inputSchema as Record<string, unknown>).type, "object");
 
     // Listing is side-effect free: dormant stays dormant, no notifications.
@@ -259,6 +260,9 @@ test("MCP server request handler", async (t) => {
     assert.match(descriptionByName.get("herdr_link_peers") ?? "", /same Herdr workspace/);
     assert.match(descriptionByName.get("herdr_link_send") ?? "", /reply_to/);
     assert.match(descriptionByName.get("herdr_link_close") ?? "", /later tool step/);
+    for (const name of [HERDR_LINK_GATEWAY, ...HERDR_LINK_TOOLS]) {
+      assert.match(descriptionByName.get(name) ?? "", /Use Herdr Link, not raw Herdr CLI/);
+    }
     const byName = new Map(tools.map((tool) => [tool.name, tool.inputSchema as Record<string, unknown>]));
     assert.deepEqual(byName.get("herdr_link_send")?.required, ["to", "message"]);
     assert.deepEqual(byName.get("herdr_link_close")?.required, ["agent"]);

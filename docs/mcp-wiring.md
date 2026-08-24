@@ -24,7 +24,7 @@ listChanged fallback     不响应刷新的 Host 继续用 gateway 显式 action
                          Codex = SessionStart hook additionalContext；
                          AGY = PreInvocation ephemeralMessage hook（主通道）
                          完整 canonical Contract 不在启动阶段注入；激活后由 tools/list 的 active descriptions
-                         与 gateway fallback presentation 提供。§1 的 builder 仅用于 active 状态的显式刷新，不用于 dormant 启动。
+                         与 gateway fallback presentation 提供，且 active presentation 必须覆盖 §3 的旁路通信禁用规则。§1 的 builder 仅用于 active 状态的显式刷新，不用于 dormant 启动。
 ```
 
 ## 0. 构建 bundle

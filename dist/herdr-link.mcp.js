@@ -379,10 +379,11 @@ var PARSE_ERROR = -32700;
 var INVALID_REQUEST = -32600;
 var METHOD_NOT_FOUND = -32601;
 var INVALID_PARAMS = -32602;
+var NORMAL_MESSAGING_RULE = "Use Herdr Link, not raw Herdr CLI, pane ids, or terminal input, for normal inter-agent messaging.";
 var TOOL_DESCRIPTIONS = {
-  [TOOL_PEERS]: "Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses.",
-  [TOOL_SEND]: 'Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery.',
-  [TOOL_CLOSE]: "Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step."
+  [TOOL_PEERS]: `Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses. ${NORMAL_MESSAGING_RULE}`,
+  [TOOL_SEND]: `Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
+  [TOOL_CLOSE]: `Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step. ${NORMAL_MESSAGING_RULE}`
 };
 var TOOL_INPUT_SCHEMAS = {
   [TOOL_PEERS]: { type: "object", properties: {} },
@@ -426,6 +427,10 @@ var GATEWAY_TOOL = {
     }
   }
 };
+function gatewayToolForState(active) {
+  if (!active) return GATEWAY_TOOL;
+  return { ...GATEWAY_TOOL, description: `${GATEWAY_TOOL.description} ${NORMAL_MESSAGING_RULE}` };
+}
 function isHerdrEnvironment() {
   return process.env.HERDR_ENV === "1" && Boolean(process.env.HERDR_BIN_PATH) && Boolean(process.env.HERDR_PANE_ID);
 }
@@ -608,7 +613,7 @@ function createRequestHandler(deps = {}) {
       case "tools/list": {
         if (!environmentOk()) return respond(id, { tools: [] });
         return respond(id, {
-          tools: activated ? [GATEWAY_TOOL, ...toolDefinitions()] : [GATEWAY_TOOL]
+          tools: activated ? [gatewayToolForState(true), ...toolDefinitions()] : [gatewayToolForState(false)]
         });
       }
       case "tools/call": {

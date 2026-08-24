@@ -71,13 +71,13 @@ export type NotificationSink = (notification: Record<string, unknown>) => void;
 
 type CanonicalToolName = typeof TOOL_PEERS | typeof TOOL_SEND | typeof TOOL_CLOSE;
 
+const NORMAL_MESSAGING_RULE = "Use Herdr Link, not raw Herdr CLI, pane ids, or terminal input, for normal inter-agent messaging.";
 const TOOL_DESCRIPTIONS: Record<CanonicalToolName, string> = {
-  [TOOL_PEERS]:
-    "Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses.",
+  [TOOL_PEERS]: `Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_SEND]:
-    'Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery.',
+    `Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_CLOSE]:
-    "Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step.",
+    `Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step. ${NORMAL_MESSAGING_RULE}`,
 };
 
 const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
@@ -137,6 +137,11 @@ const GATEWAY_TOOL: { name: typeof HERDR_LINK_GATEWAY; description: string; inpu
     },
   },
 };
+
+function gatewayToolForState(active: boolean): typeof GATEWAY_TOOL {
+  if (!active) return GATEWAY_TOOL;
+  return { ...GATEWAY_TOOL, description: `${GATEWAY_TOOL.description} ${NORMAL_MESSAGING_RULE}` };
+}
 
 /** Same triple gate as the other adapters (PROTOCOL.md §7 NOT_IN_HERDR condition + pane identity). */
 export function isHerdrEnvironment(): boolean {
@@ -431,7 +436,7 @@ export function createRequestHandler(
         // gateway plus the canonical Tier 1 tools.
         if (!environmentOk()) return respond(id, { tools: [] });
         return respond(id, {
-          tools: activated ? [GATEWAY_TOOL, ...toolDefinitions()] : [GATEWAY_TOOL],
+          tools: activated ? [gatewayToolForState(true), ...toolDefinitions()] : [gatewayToolForState(false)],
         });
       }
       case "tools/call": {

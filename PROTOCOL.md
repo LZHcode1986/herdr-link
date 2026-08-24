@@ -59,14 +59,14 @@ V1 不定义：`task_id`、`status`、`result`、`error`、`runtime`、`model`�
 
 投递时 Adapter 可在 Envelope 外包裹一段 self-describing 的 inbound wrapper 文本（末行为逐字 Envelope），使处于 dormant 状态的接收方也能识别这是一条 Herdr Link 消息，并在需要回复时先激活 gateway、再调用 send。wrapper 只是 transport 外衣：不改变 Envelope 字段集合，不是协议实体，仅在真实投递时产生、不常驻 system prompt。
 
-## 3. Agent Communication Contract（激活后注入）
+## 3. Agent Communication Contract（激活后呈现）
 
 Herdr Link 的模型可见面分两个状态：
 
 - **Dormant**（默认）：Adapter 已注册但未激活。模型侧只呈现极小的 Tier 0 gateway（§4.1）；**不注入任何 Communication Contract**，不呈现 Tier 1 工具的完整 schema/description。
-- **Active**：Tier 0 gateway 被调用后（触发条件见 §6.2），Adapter 向当前 runtime session 注入语义等价的 compact Contract，并使 peers/send/close 对模型可用；激活在本 runtime session 内保持，直到 session 结束。
+- **Active**：Tier 0 gateway 被调用后（触发条件见 §6.2），Adapter 使本 runtime session 对模型呈现语义等价的 Active Contract，并使 peers/send/close 对模型可用；激活在本 runtime session 内保持，直到 session 结束。
 
-Active 状态下，所有 Runtime Adapter 必须向 Agent 注入语义等价的 Contract 并暴露 §4 定义的能力。Contract 与工具 schema/description 共同构成完整且唯一的 Agent-facing 使用权威；符合规范的部署不得依赖外部 `AGENTS.md`、Skill、手工 prompt 或 Herdr CLI 指令补全正常通信知识。允许根据 Runtime 的呈现机制调整表现形式（例如 gateway dispatch 形态可将同名规则表达为对 `herdr_link` action 的说明），但以下规则不可改变：
+Active 状态下，所有 Runtime Adapter 必须使本节规则的语义对 Agent 完整可见并暴露 §4 定义的能力。可通过 system-prompt injection、active tool schema/description、gateway presentation 或这些机制的组合实现；Active Contract 与工具 schema/description 共同构成完整且唯一的 Agent-facing 使用权威。符合规范的部署不得依赖外部 `AGENTS.md`、Skill、手工 prompt 或 Herdr CLI 指令补全正常通信知识。允许根据 Runtime 的呈现机制调整表现形式（例如 gateway dispatch 形态可将同名规则表达为对 `herdr_link` action 的说明），但以下规则不可改变：
 
 ```text
 Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
@@ -147,9 +147,9 @@ Herdr Link is the standard interoperability channel between agents running in th
   - **true deferred tools**：四个工具均为独立注册工具，dormant 时仅 gateway 在模型可见集合中，激活后 Tier 1 进入可见集合（如 Pi 的动态工具 API）；
   - **prefix 型独立工具**（如 MCP 宿主的 `mcp__<namespace>__<tool>`）：呈现名的结尾必须是完整 canonical 名；
   - **wrapper 形式**（如 AGY 的 `ServerName`/`ToolName` 参数化调用）：`ToolName` 即 canonical 名；
-  - **single-gateway dispatch**：模型面只有 `herdr_link` 一个工具，Tier 1 能力以 `action` 参数分发；此时注入的 Contract 必须把 §3 规则完整映射到 gateway action 上；
+  - **single-gateway dispatch**：模型面只有 `herdr_link` 一个工具，Tier 1 能力以 `action` 参数分发；此时 active presentation 必须把 §3 规则完整映射到 gateway action 上；
 - 无论哪种形态，呈现层与 canonical 名之间必须有确定性映射；入参/出参 schema、错误语义与调用时序约束完全一致；
-- 注入的 Contract 必须同时声明该 Runtime 的实际呈现方式与 dormant/active 行为，使模型无需猜测即可正确激活和调用。
+- Active presentation 必须同时声明该 Runtime 的实际呈现方式与 dormant/active 行为，使模型无需猜测即可正确激活和调用。
 
 逻辑能力集合在所有形态下恒为：**activate / peers / send(+reply) / close**。
 
@@ -169,7 +169,7 @@ Herdr Link is the standard interoperability channel between agents running in th
 一个 Runtime 被视为支持 Herdr Link，必须由同一 Runtime Adapter 交付闭环满足四项逻辑能力：
 
 1. **Activate**：提供 `herdr_link` gateway 等价能力（§4.1）；
-2. **Inject Contract**：active 后让模型知道本协议第 3 节的规则；dormant 时必须**不**注入；
+2. **Expose Active Contract Semantics**：active 后让模型完整知道本协议第 3 节的规则；允许通过 system-prompt injection、active tool schema/description、gateway presentation 或组合实现；dormant 时必须**不**暴露 Tier 1 Contract 语义；
 3. **Expose Peers / Send**：提供 `herdr_link_peers`、`herdr_link_send`（含 reply_to 回复）等价能力；
 4. **Expose Close**：提供 `herdr_link_close` 等价能力。
 
@@ -178,7 +178,7 @@ Herdr Link is the standard interoperability channel between agents running in th
 Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool system 实现；不强制实现语言。V1 不创建统一 Adapter Framework（无 BaseAdapter / registry / plugin loader / daemon）。工具命名呈现须符合 §4.5。已知的合规呈现形态：
 
 - **true deferred tools**（如 Pi）：四工具全部注册，`session_start` 时把 Tier 1 移出 active 集合，gateway 以加性方式启用 Tier 1；close 保持顺序执行以保证 send 先完成；
-- **single-gateway dispatch**（宿主无公开的动态启停 API 时，如 OpenCode）：模型面常驻且仅有一个极小 `herdr_link` dispatcher，空参调用幂等激活本 session，随后以 `action: peers|send|close` 分发到同一控制层；Contract 仅注入已激活 session；
+- **single-gateway dispatch**（宿主无公开的动态启停 API 时，如 OpenCode）：模型面常驻且仅有一个极小 `herdr_link` dispatcher，空参调用幂等激活本 session，随后以 `action: peers|send|close` 分发到同一控制层；Active Contract semantics 仅在已激活 session 暴露；
 - **shared MCP：listChanged 优先 + gateway fallback**（Claude Code / Codex / AGY 等）：dormant `tools/list` 只返回 gateway；声明 `tools.listChanged` capability，激活时发射一次 `notifications/tools/list_changed`；active `tools/list` 返回 gateway + Tier 1；不响应刷新的 Host 通过 gateway 显式 action 分发保持全功能。MCP activation 按 stdio 连接（即宿主为本 session 拉起的 server 进程）记忆，连接结束即回到 dormant。
 
 ### 6.1 环境门控（Environment Gate）
