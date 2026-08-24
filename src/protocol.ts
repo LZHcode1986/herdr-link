@@ -133,10 +133,10 @@ running in the same Herdr session.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
 5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed.
+6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
 7. Never use a raw pane id or UI focus as an inter-agent address.
 8. Do not use Herdr CLI, terminal input, pane reads, waits, or Skills for normal inter-agent messaging.
-9. Herdr Link does not choose, create, configure, schedule, or recycle agents.`;
+9. Herdr Link communicates with existing named agents and executes explicit close requests; agent creation, configuration, scheduling, identity ownership, and lifecycle policy remain outside it.`;
 
 /** Canonical tool names (PROTOCOL.md §4). */
 export const HERDR_LINK_TOOLS = ["herdr_link_peers", "herdr_link_send", "herdr_link_close"] as const;

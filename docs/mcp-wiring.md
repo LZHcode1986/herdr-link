@@ -43,10 +43,10 @@ running in the same Herdr session.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
 5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed.
+6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
 7. Never use a raw pane id or UI focus as an inter-agent address.
 8. Do not use Herdr CLI, terminal input, pane reads, waits, or Skills for normal inter-agent messaging.
-9. Herdr Link does not choose, create, configure, schedule, or recycle agents.
+9. Herdr Link communicates with existing named agents and executes explicit close requests; agent creation, configuration, scheduling, identity ownership, and lifecycle policy remain outside it.
 ```
 
 ### 1.2 Codex 附录（prefix 型，`buildMcpPrefixedCommunicationContract("herdr_link")`）
@@ -73,10 +73,9 @@ Use:
 
 两个生成函数的参数均**无默认值**——serverInfo.name（`herdr-link`）与 host tool namespace（`herdr_link`）是两个概念，调用方必须显式声明。
 注意：每个 Runtime **只走一条**契约通道，避免重复注入（launcher 与 hook 并存会双份）。
-## 2. Claude Code（已封存，暂缓接入）
-
-> **状态：SUSPENDED（2026-08-23）**——CC 侧模型出现问题，暂不接入；以下样例保留供恢复时直接使用。共享 MCP server（`src/mcp.ts` / `dist/herdr-link.mcp.js`）为三家属一，不含 CC 专属代码，无需改动。
-> **Archived wiring snapshot**：本节为封存时的原样快照（server key `herdr-link` 与 allowlist namespace 未核对一致）；恢复 CC 支持时须重新验证呈现 namespace 再使用。
+## 2. Claude Code（launcher + shared MCP）
+> **状态：VALIDATED（2026-08-24）**——CC 2.1.241 已在独立 Herdr tab（`cc-mcp-review`）的新 pane 中以默认 Gemini 3.7 Flash 完成 MCP handshake、工具呈现、Contract launcher 注入及 model-facing `peers → send(reply_to)` 10 秒任务闭环。共享 MCP server（`src/mcp.ts` / `dist/herdr-link.mcp.js`）无需 CC 专属代码。
+> **命名约束**：CC 的 MCP server key 必须使用 `herdr_link`（下划线）；模型呈现为 `mcp__herdr_link__<canonical>`。`serverInfo.name` 仍为 `herdr-link`，两者不可混用。allowlist 使用 `mcp__herdr_link__*`。
 
 注册 MCP server（二选一）：
 
@@ -85,7 +84,8 @@ Use:
 ```json
 {
   "mcpServers": {
-    "herdr-link": {
+    "herdr_link": {
+      "type": "stdio",
       "command": "node",
       "args": ["/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"]
     }
@@ -96,16 +96,17 @@ Use:
 或启动参数直传（免审批，适合 herdr 拉起的 worker）：
 
 ```bash
+node --input-type=module -e 'import { buildMcpPrefixedCommunicationContract } from "/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"; process.stdout.write(buildMcpPrefixedCommunicationContract("herdr_link"))' > /absolute/path/to/herdr-link-cc-contract.txt
 herdr agent start <name> --kind claude --pane <pane_id> -- \
   --mcp-config /absolute/path/to/herdr-link.mcp.json \
   --allowedTools "mcp__herdr_link__*" \
-  --append-system-prompt "<第 1.1 节 canonical 文本 + 第 1.2 节 Codex 附录>"
+  --append-system-prompt-file /absolute/path/to/herdr-link-cc-contract.txt
 ```
 
 要点：
 
 - **权限 allowlist 必配**（`--allowedTools "mcp__herdr_link__*"`），否则 worker 卡在权限确认上；
-- 契约经 `--append-system-prompt` 进入系统提示，跨 compaction 存活；不要用会整体替换默认提示的 `--system-prompt`；
+- 契约经 `--append-system-prompt` 或 `--append-system-prompt-file` 进入系统提示，跨 compaction 存活；不要用会整体替换默认提示的 `--system-prompt`；
 - 不要再叠加 SessionStart/UserPromptSubmit hook 或 CLAUDE.md 注入同一契约（去重原则）。
 
 ## 3. Codex
