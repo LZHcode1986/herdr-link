@@ -2,16 +2,16 @@ import type { ExtensionAPI, ToolExecutionMode } from "@earendil-works/pi-coding-
 import { Type } from "typebox";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
-import { AGENT_NAME_RE, COMMUNICATION_CONTRACT, formatAgentFacingError, MESSAGE_ID_RE } from "./protocol.ts";
+import { COMMUNICATION_CONTRACT, formatAgentFacingError } from "./protocol.ts";
 
 const PEERS_PARAMETERS = Type.Object({});
 const SEND_PARAMETERS = Type.Object({
-  to: Type.String({ pattern: AGENT_NAME_RE.source }),
-  message: Type.String({ minLength: 1 }),
-  reply_to: Type.Optional(Type.String({ pattern: MESSAGE_ID_RE.source })),
+  to: Type.String(),
+  message: Type.String(),
+  reply_to: Type.Optional(Type.String()),
 });
 const CLOSE_PARAMETERS = Type.Object({
-  agent: Type.String({ pattern: AGENT_NAME_RE.source }),
+  agent: Type.String(),
 });
 
 function toolResult(value: object) {

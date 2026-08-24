@@ -1,7 +1,7 @@
 import { tool, type Plugin } from "@opencode-ai/plugin";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
-import { AGENT_NAME_RE, COMMUNICATION_CONTRACT, formatAgentFacingError, MESSAGE_ID_RE } from "./protocol.ts";
+import { COMMUNICATION_CONTRACT, formatAgentFacingError } from "./protocol.ts";
 
 const HERDR_LINK_TOOL_DESCRIPTION = {
   peers: "Discover named peers available through the cross-agent communication channel.",
@@ -47,9 +47,9 @@ export const herdrLinkPlugin: Plugin = async () => {
       herdr_link_send: tool({
         description: HERDR_LINK_TOOL_DESCRIPTION.send,
         args: {
-          to: tool.schema.string().regex(AGENT_NAME_RE).describe("Target Herdr agent name"),
-          message: tool.schema.string().min(1).describe("Non-empty message payload"),
-          reply_to: tool.schema.string().regex(MESSAGE_ID_RE).optional().describe("Valid Herdr Link message id being replied to"),
+          to: tool.schema.string().describe("Target Herdr agent name"),
+          message: tool.schema.string().describe("Message payload"),
+          reply_to: tool.schema.string().optional().describe("Message id being replied to"),
         },
         async execute(args) {
           try {
@@ -63,7 +63,7 @@ export const herdrLinkPlugin: Plugin = async () => {
       herdr_link_close: tool({
         description: HERDR_LINK_TOOL_DESCRIPTION.close,
         args: {
-          agent: tool.schema.string().regex(AGENT_NAME_RE).describe("Target Herdr agent name"),
+          agent: tool.schema.string().describe("Target Herdr agent name"),
         },
         async execute(args) {
           try {

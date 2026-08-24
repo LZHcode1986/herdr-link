@@ -63,6 +63,12 @@ test("OpenCode adapter environment gating and hooks", async (t) => {
     assert.equal(hasSafeParse(tools.herdr_link_send.args.message), true);
     assert.equal(hasSafeParse(tools.herdr_link_send.args.reply_to), true);
     assert.equal(hasSafeParse(tools.herdr_link_close.args.agent), true);
+    const accepts = (schema: unknown, value: unknown): boolean =>
+      (schema as { safeParse(input: unknown): { success: boolean } }).safeParse(value).success;
+    assert.equal(accepts(tools.herdr_link_send.args.to, "Not-A-Name"), true);
+    assert.equal(accepts(tools.herdr_link_send.args.message, ""), true);
+    assert.equal(accepts(tools.herdr_link_send.args.reply_to, "hl_bad"), true);
+    assert.equal(accepts(tools.herdr_link_close.args.agent, "Not-A-Name"), true);
     assert.equal(typeof hooks["experimental.chat.system.transform"], "function");
   });
 

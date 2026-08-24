@@ -68,7 +68,7 @@ export function formatAgentFacingError(error: unknown, fallbackCode: LinkErrorCo
 /** Creates a unique message id: `hl_` + base36 timestamp + random suffix. */
 export function createMessageId(): string {
   const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10);
+  const rand = Math.random().toString(36).slice(2, 10) || "0";
   return `hl_${ts}_${rand}`;
 }
 

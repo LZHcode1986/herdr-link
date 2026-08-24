@@ -14,6 +14,7 @@ import {
   isHerdrLinkEnvelope,
   isValidAgentName,
   isValidMessageId,
+  MESSAGE_ID_RE,
   COMMUNICATION_CONTRACT,
   HERDR_LINK_TOOLS,
   type HerdrLinkEnvelope,
@@ -24,6 +25,17 @@ test("createMessageId produces unique ids with hl_ prefix", () => {
   const b = createMessageId();
   assert.match(a, /^hl_[a-z0-9]+_[a-z0-9]+$/);
   assert.notEqual(a, b);
+});
+
+test("createMessageId keeps a non-empty random segment when Math.random returns zero", () => {
+  const originalRandom = Math.random;
+  try {
+    Math.random = () => 0;
+    const id = createMessageId();
+    assert.ok(MESSAGE_ID_RE.test(id));
+  } finally {
+    Math.random = originalRandom;
+  }
 });
 
 test("isValidAgentName enforces the [a-z][a-z0-9_-]{0,31} rule", () => {

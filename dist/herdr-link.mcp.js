@@ -29,7 +29,7 @@ function formatAgentFacingError(error, fallbackCode) {
 }
 function createMessageId() {
   const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10);
+  const rand = Math.random().toString(36).slice(2, 10) || "0";
   return `hl_${ts}_${rand}`;
 }
 function isValidAgentName(name) {
@@ -273,16 +273,16 @@ var TOOL_INPUT_SCHEMAS = {
   herdr_link_send: {
     type: "object",
     properties: {
-      to: { type: "string", pattern: AGENT_NAME_RE.source, description: "Target Herdr agent name" },
-      message: { type: "string", minLength: 1, description: "Non-empty message payload" },
-      reply_to: { type: "string", pattern: MESSAGE_ID_RE.source, description: "Valid Herdr Link message id being replied to" }
+      to: { type: "string", description: "Target Herdr agent name" },
+      message: { type: "string", description: "Message payload" },
+      reply_to: { type: "string", description: "Message id being replied to" }
     },
     required: ["to", "message"]
   },
   herdr_link_close: {
     type: "object",
     properties: {
-      agent: { type: "string", pattern: AGENT_NAME_RE.source, description: "Target Herdr agent name" }
+      agent: { type: "string", description: "Target Herdr agent name" }
     },
     required: ["agent"]
   }

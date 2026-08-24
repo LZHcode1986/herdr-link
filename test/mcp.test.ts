@@ -142,6 +142,18 @@ test("MCP server request handler", async (t) => {
     const byName = new Map(tools.map((tool) => [tool.name, tool.inputSchema as Record<string, unknown>]));
     assert.deepEqual(byName.get("herdr_link_send")?.required, ["to", "message"]);
     assert.deepEqual(byName.get("herdr_link_close")?.required, ["agent"]);
+    const assertBasicString = (schema: unknown): void => {
+      const value = schema as Record<string, unknown>;
+      assert.equal(value.type, "string");
+      assert.equal(value.pattern, undefined);
+      assert.equal(value.minLength, undefined);
+    };
+    const sendProperties = byName.get("herdr_link_send")?.properties as Record<string, unknown>;
+    const closeProperties = byName.get("herdr_link_close")?.properties as Record<string, unknown>;
+    assertBasicString(sendProperties.to);
+    assertBasicString(sendProperties.message);
+    assertBasicString(sendProperties.reply_to);
+    assertBasicString(closeProperties.agent);
   });
 
   await t.test("returns peer directory, sent receipt, and close receipt", async () => {

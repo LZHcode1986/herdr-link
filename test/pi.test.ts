@@ -4,7 +4,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import piExtension from "../src/pi.ts";
 
-type RegisteredTool = { name: string; executionMode?: string };
+type RegisteredTool = {
+  name: string;
+  executionMode?: string;
+  parameters?: { properties?: Record<string, unknown> };
+};
 
 const HERDR_ENV_KEYS = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID"] as const;
 
@@ -74,5 +78,18 @@ test("Pi adapter environment gating and registration", async (t) => {
     for (const tool of tools) {
       if (tool.name !== "herdr_link_close") assert.equal(tool.executionMode, undefined);
     }
+    const sendTool = tools.find((tool) => tool.name === "herdr_link_send");
+    const sendProperties = sendTool?.parameters?.properties ?? {};
+    const closeProperties = closeTool?.parameters?.properties ?? {};
+    const assertBasicString = (schema: unknown): void => {
+      const value = schema as Record<string, unknown>;
+      assert.equal(value.type, "string");
+      assert.equal(value.pattern, undefined);
+      assert.equal(value.minLength, undefined);
+    };
+    assertBasicString(sendProperties.to);
+    assertBasicString(sendProperties.message);
+    assertBasicString(sendProperties.reply_to);
+    assertBasicString(closeProperties.agent);
   });
 });
