@@ -8,6 +8,4 @@ dist/*
 .docs/
 .pi/
 .opencode/
-test/
-tsconfig.json
 package-lock.json
