@@ -74,11 +74,23 @@ function operationError(error: unknown, code: LinkErrorCode): HerdrLinkError {
   return new HerdrLinkError(code, errorDetail(error));
 }
 
+/** Structured Herdr CLI application rejection; operation adapters map it to their stable code. */
+class HerdrCliError extends Error {
+  readonly cliCode: string;
+
+  constructor(cliCode: string, detail: string) {
+    super(detail);
+    this.name = "HerdrCliError";
+    this.cliCode = cliCode;
+  }
+}
+
 async function runFor(args: string[], failureCode: LinkErrorCode): Promise<unknown> {
   assertHerdrEnvironment();
   try {
     return await runHerdr(args);
   } catch (error) {
+    if (error instanceof HerdrCliError) throw operationError(error, failureCode);
     // Already-classified Link errors, including NOT_IN_HERDR, pass through
     // without being re-labelled by the operation-specific fallback code.
     if (error instanceof HerdrLinkError) throw error;
@@ -88,9 +100,10 @@ async function runFor(args: string[], failureCode: LinkErrorCode): Promise<unkno
 
 const CLI_ERROR_CODE_MAP: Record<string, LinkErrorCode> = {
   agent_not_found: "PEER_NOT_FOUND",
+  not_in_herdr: "NOT_IN_HERDR",
 };
 
-function classifyCliError(error: unknown): HerdrLinkError | undefined {
+function classifyCliError(error: unknown): HerdrLinkError | HerdrCliError | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const commandError = error as { stdout?: unknown; stderr?: unknown };
 
@@ -111,7 +124,8 @@ function classifyCliError(error: unknown): HerdrLinkError | undefined {
 
     const cliMessage = errorPayload.message;
     const detail = typeof cliMessage === "string" && cliMessage.length > 0 ? `${cliCode}: ${cliMessage}` : cliCode;
-    return new HerdrLinkError(CLI_ERROR_CODE_MAP[cliCode] ?? "NOT_IN_HERDR", detail);
+    const mappedCode = CLI_ERROR_CODE_MAP[cliCode];
+    return mappedCode ? new HerdrLinkError(mappedCode, detail) : new HerdrCliError(cliCode, detail);
   }
 
   return undefined;
@@ -123,9 +137,12 @@ export async function runHerdr(args: string[]): Promise<unknown> {
 
   try {
     const output = await herdrRunner(binary as string, args);
-    return JSON.parse(output.stdout);
+    const parsed = JSON.parse(output.stdout);
+    const cliError = classifyCliError(output);
+    if (cliError) throw cliError;
+    return parsed;
   } catch (error) {
-    if (error instanceof HerdrLinkError) throw error;
+    if (error instanceof HerdrLinkError || error instanceof HerdrCliError) throw error;
     const cliError = classifyCliError(error);
     if (cliError) throw cliError;
     // Stale/deleted binary, transport failure, or invalid JSON all mean the

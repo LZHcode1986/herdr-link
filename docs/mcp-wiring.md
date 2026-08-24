@@ -19,10 +19,12 @@ listChanged fallback     不响应刷新的 Host 继续用 gateway 显式 action
 错误语义                  五个 Link error 一律 isError:true + "CODE: detail" 文本（PROTOCOL §7）；
                          环境/transport 失败归类 NOT_IN_HERDR 且不被重包装
 零副作用                  非 Herdr 环境 tools/list 返回 []，模型无感知；stale host 注册表直接调用也返回 NOT_IN_HERDR
-契约注入                  Claude Code = launcher --append-system-prompt-file；
+契约/提示注入            dormant 启动只允许短 Tier-0 hint：
+                         Claude Code = launcher --append-system-prompt-file；
                          Codex = SessionStart hook additionalContext；
                          AGY = PreInvocation ephemeralMessage hook（主通道）
-                         （契约文本 = PROTOCOL §3 canonical compact 文本 + 本 Runtime 的 lazy/presentation 附录，见 §1）
+                         完整 canonical Contract 不在启动阶段注入；激活后由 tools/list 的 active descriptions
+                         与 gateway fallback presentation 提供。§1 的 builder 仅用于 active 状态的显式刷新，不用于 dormant 启动。
 ```
 
 ## 0. 构建 bundle
@@ -37,9 +39,9 @@ BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 
 **命名约束**：三家 Runtime 的 host registration namespace 均使用 `herdr_link`（下划线；连字符名在 Codex code-mode 工具面有兼容性问题）。Claude Code / Codex 以 prefix 形式呈现、AGY 以 wrapper 形式呈现（PROTOCOL §4.5），契约附录分别由 `buildMcpPrefixedCommunicationContract("herdr_link")` 与 `buildMcpWrapperCommunicationContract("call_mcp_tool", "herdr_link")` 生成（见 §1.2 / §1.3）。
 
-## 1. 契约注入文本（canonical compact 共享 + 按 Runtime lazy/presentation 附录）
+## 1. Active-state Contract 文本（canonical compact 共享 + Runtime presentation 附录）
 
-契约 = **canonical compact Contract（PROTOCOL §3，三家共享）** + **Runtime 附录**（按该 Runtime 的实际呈现形态追加，并声明 dormant/active 行为）。不要让 wrapper 型 Runtime 复用 prefix 附录，反之亦然。每个 Runtime **只走一条**契约通道，避免重复注入（launcher 与 hook 并存会双份）。部署不依赖外部 `AGENTS.md`、Skill 或操作者维护的副本补全正常通信知识。
+以下内容只描述 **激活后的可选 Contract refresh**；不得在 dormant 启动 hook 中生成或注入。正常激活后的权威来源是 `tools/list` 的 Tier 1 schema/description 与 gateway fallback presentation。若某 Host 支持激活后刷新 system prompt，再由对应 builder 生成 canonical + Runtime 附录；不要让 wrapper 型 Runtime 复用 prefix 附录。部署不依赖外部 `AGENTS.md`、Skill 或操作者维护的副本补全正常通信知识。
 
 ### 1.1 canonical 文本（所有 MCP Runtime 共享）
 
@@ -115,18 +117,20 @@ Use:
 或启动参数直传（免审批，适合 herdr 拉起的 worker）：
 
 ```bash
-node --input-type=module -e 'import { buildMcpPrefixedCommunicationContract } from "/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"; process.stdout.write(buildMcpPrefixedCommunicationContract("herdr_link"))' > /absolute/path/to/herdr-link-cc-contract.txt
+cat > /absolute/path/to/herdr-link-cc-tier0-hint.txt <<'EOF'
+Herdr Link gateway: activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message.
+EOF
 herdr agent start <name> --kind claude --pane <pane_id> -- \
   --mcp-config /absolute/path/to/herdr-link.mcp.json \
   --allowedTools "mcp__herdr_link__*" \
-  --append-system-prompt-file /absolute/path/to/herdr-link-cc-contract.txt
+  --append-system-prompt-file /absolute/path/to/herdr-link-cc-tier0-hint.txt
 ```
 
 要点：
 
 - **权限 allowlist 必配**（`--allowedTools "mcp__herdr_link__*"`），否则 worker 卡在权限确认上；
-- 契约经 `--append-system-prompt` 或 `--append-system-prompt-file` 进入系统提示，跨 compaction 存活；不要用会整体替换默认提示的 `--system-prompt`；
-- 不要再叠加 SessionStart/UserPromptSubmit hook 或 CLAUDE.md 注入同一契约（去重原则）。
+- launcher 只追加上面的短 Tier-0 hint；dormant 阶段不得追加完整 Contract。激活后以 `tools/list` 刷新得到的 Tier 1 descriptions 为权威；
+- 不要再叠加 SessionStart/UserPromptSubmit hook 或 CLAUDE.md 注入完整 Contract（去重与 dormant 零成本原则）。
 
 ## 3. Codex
 
@@ -139,7 +143,7 @@ args = ["/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"]
 env_vars = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]
 ```
 
-契约注入走 SessionStart hook（需 `[features] hooks = true`）。`~/.codex/hooks.json`：
+SessionStart hook 只注入短 Tier-0 hint（需 `[features] hooks = true`），不在启动阶段注入完整 Contract。`~/.codex/hooks.json`：
 
 ```json
 {
@@ -149,7 +153,7 @@ env_vars = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]
         "hooks": [
           {
             "type": "command",
-            "command": "bash '/absolute/path/to/herdr-link-codex-contract.sh' session",
+            "command": "bash '/absolute/path/to/herdr-link-codex-tier0-hint.sh' session",
             "timeout": 10
           }
         ]
@@ -159,7 +163,7 @@ env_vars = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]
 }
 ```
 
-`herdr-link-codex-contract.sh`（与 herdr 官方 `herdr-agent-state.sh` 相同的门控模式，非 Herdr 会话零输出；正文 = §1.1 canonical 文本 + §1.2 prefix 附录，建议由 bundle 生成函数输出以避免手工副本漂移）：
+`herdr-link-codex-tier0-hint.sh`（非 Herdr 会话零输出；只输出短激活提示，不生成 canonical Contract）：
 
 ```sh
 #!/bin/sh
@@ -167,7 +171,7 @@ env_vars = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"]
 [ -n "${HERDR_BIN_PATH:-}" ] || exit 0
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
 
-node --input-type=module -e 'import { buildMcpPrefixedCommunicationContract } from "/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"; process.stdout.write(buildMcpPrefixedCommunicationContract("herdr_link"))'
+printf '%s\n' 'Herdr Link gateway: activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message.'
 ```
 
 ## 4. AGY
@@ -185,7 +189,7 @@ node --input-type=module -e 'import { buildMcpPrefixedCommunicationContract } fr
 }
 ```
 
-契约注入以 PreInvocation `ephemeralMessage` hook 为主通道（动态门禁；静态 Rules 无法条件化，只能作辅助，否则非 Herdr 会话也会被注入）。实测注记（2026-08-23 transcript 取证）：AGY 的 model-facing MCP 调用是 **wrapper 形态**——`ServerName:"herdr_link"` + `ToolName` 参数化调用（非 `mcp__` 前缀独立函数），符合协议 §4.5 的 wrapper 条款。hooks 配置：
+契约提示以 PreInvocation `ephemeralMessage` hook 为主通道：它只注入短 Tier-0 hint，不在 dormant 阶段生成完整 Contract。激活后由 wrapper 的 active tools/list descriptions 与 gateway dispatch 提供完整语义。实测注记（2026-08-23 transcript 取证）：AGY 的 model-facing MCP 调用是 **wrapper 形态**——`ServerName:"herdr_link"` + `ToolName` 参数化调用（非 `mcp__` 前缀独立函数），符合协议 §4.5 的 wrapper 条款。hooks 配置：
 
 ```json
 {
@@ -193,7 +197,7 @@ node --input-type=module -e 'import { buildMcpPrefixedCommunicationContract } fr
     "PreInvocation": [
       {
         "type": "command",
-        "command": "bash '/absolute/path/to/herdr-link-agy-contract.sh'",
+        "command": "bash '/absolute/path/to/herdr-link-agy-tier0-hint.sh'",
         "timeout": 10
       }
     ]
@@ -203,7 +207,7 @@ node --input-type=module -e 'import { buildMcpPrefixedCommunicationContract } fr
 
 格式要点：顶层键是**集成名**（可与 herdr 官方集成的 `"herdr"` 组并存，互不覆盖）；`PreInvocation` 的 handler **直接平铺在事件数组里**——没有 `"hooks"` wrapper（那是 `PreToolUse`/`PostToolUse` 这类 matcher 事件的结构）。写成顶层 `"PreInvocation"` 或嵌套 `"hooks"` 都不会生效。
 
-`herdr-link-agy-contract.sh`（非 Herdr 输出 `{}`，零字符注入；正文 = §1.1 canonical 文本 + §1.3 wrapper 附录，建议由 bundle 生成函数输出）：
+`herdr-link-agy-tier0-hint.sh`（非 Herdr 输出 `{}`；Herdr 仅注入短 Tier-0 hint，不生成 canonical Contract）：
 
 ```sh
 #!/bin/sh
@@ -213,9 +217,8 @@ cat >/dev/null 2>&1 || true   # 吞掉 hook stdin 的上下文 JSON
 [ -n "${HERDR_BIN_PATH:-}" ] || { printf '{}'; exit 0; }
 [ -n "${HERDR_PANE_ID:-}" ] || { printf '{}'; exit 0; }
 
-CONTRACT=$(node --input-type=module -e 'import { buildMcpWrapperCommunicationContract } from "/absolute/path/to/herdr-link/dist/herdr-link.mcp.js"; process.stdout.write(buildMcpWrapperCommunicationContract("call_mcp_tool", "herdr_link"))')
-
-node -e 'process.stdout.write(JSON.stringify({ injectSteps: [{ ephemeralMessage: process.argv[1] }] }))' "$CONTRACT"
+HINT='Herdr Link gateway: use the MCP wrapper with ServerName="herdr_link" and ToolName="herdr_link"; activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message.'
+node -e 'process.stdout.write(JSON.stringify({ injectSteps: [{ ephemeralMessage: process.argv[1] }] }))' "$HINT"
 ```
 
 ## 5. 验证（冒烟四件套）

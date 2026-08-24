@@ -181,8 +181,9 @@ test("Herdr control layer", async (t) => {
       assert.ok(wrapperText.startsWith(INBOUND_WRAPPER_MARKER));
       assert.ok(wrapperText.includes("From: brain"));
       assert.ok(wrapperText.includes(`Message id: ${sent.id}`));
-      assert.ok(wrapperText.includes('to="brain"'));
-      assert.ok(wrapperText.includes(`reply_to="${sent.id}"`));
+      assert.ok(wrapperText.includes("active Herdr Link send capability"));
+      assert.ok(wrapperText.includes("envelope.from"));
+      assert.ok(wrapperText.includes("reply_to set to envelope.id"));
       const embedded = JSON.parse(wrapperText.split("\n").at(-1)!) as Record<string, unknown>;
       // Outer wrapper never enters the envelope: minimal herdr-link/1 fields only.
       assert.deepEqual(embedded, {
@@ -338,6 +339,39 @@ test("Herdr control layer", async (t) => {
     });
   });
 
+  await t.test("maps Herdr application errors to operation-specific Link codes", async () => {
+    for (const code of ["agent_blocked", "agent_not_ready", "agent_prompt_failed"] as const) {
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "get" && args[2] === "self-pane") {
+          return { result: { agent: { name: "brain", workspace_id: "ws-1", pane_id: "w1:p1", agent_status: "idle" } } };
+        }
+        if (args[0] === "agent" && args[1] === "get" && args[2] === "worker-a") {
+          return { result: { agent: { name: "worker-a", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } } };
+        }
+        if (args[0] === "agent" && args[1] === "prompt") {
+          throw cliError(code, `${code}: prompt rejected`);
+        }
+        return { result: { closed: true } };
+      }, async () => {
+        await assert.rejects(sendMessage("worker-a", "hello"), matchesCode("SEND_FAILED"));
+      });
+    }
+
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "get" && args[2] === "self-pane") {
+        return { result: { agent: { name: "brain", workspace_id: "ws-1", pane_id: "w1:p1", agent_status: "idle" } } };
+      }
+      if (args[0] === "agent" && args[1] === "get" && args[2] === "worker-a") {
+        return { result: { agent: { name: "worker-a", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } } };
+      }
+      if (args[0] === "pane" && args[1] === "close") {
+        throw cliError("pane_close_failed", "pane close rejected");
+      }
+      return { result: {} };
+    }, async () => {
+      await assert.rejects(closeAgentPane("worker-a"), matchesCode("CLOSE_FAILED"));
+    });
+  });
 
   await t.test("returns NOT_IN_HERDR when the environment is unavailable", async () => {
     await withMock(async () => ({ ok: true }), async (calls) => {

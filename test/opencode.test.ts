@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { herdrLinkPlugin } from "../src/opencode.ts";
 import { setHerdrRunnerForTests, type HerdrRunner } from "../src/herdr.ts";
-import { extractInboundEnvelope, HERDR_LINK_GATEWAY, TOOL_CLOSE, TOOL_PEERS, TOOL_SEND } from "../src/protocol.ts";
+import { COMMUNICATION_CONTRACT, extractInboundEnvelope, HERDR_LINK_GATEWAY, TOOL_CLOSE, TOOL_PEERS, TOOL_SEND } from "../src/protocol.ts";
 
 const HERDR_ENV_KEYS = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID"] as const;
 type HerdrEnv = Record<(typeof HERDR_ENV_KEYS)[number], string | undefined>;
@@ -90,9 +90,11 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
   });
 
   await t.test("registers only the single herdr_link gateway — no always-resident Tier 1 tools", async () => {
-    const { hooks } = await gatewayInHerdrEnvironment();
+    const { hooks, gateway } = await gatewayInHerdrEnvironment();
 
     assert.deepEqual(Object.keys(hooks.tool ?? {}), [HERDR_LINK_GATEWAY]);
+    assert.match(gateway.description, /only when the user explicitly asks to use Herdr/);
+    assert.match(gateway.description, /handling an inbound Herdr Link message/);
     for (const tier1 of [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE]) {
       assert.equal(hooks.tool?.[tier1], undefined);
     }
@@ -187,8 +189,9 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     const active = systemOutput("base prompt");
     await transform({ sessionID: "active-session", model: {} as never }, active as never);
     assert.equal(active.system.length, 2);
-    assert.match(active.system[1] ?? "", /Herdr Link \(herdr-link\/1\) is active/);
-    assert.match(active.system[1] ?? "", /"reply_to"/);
+    assert.ok((active.system[1] ?? "").startsWith(COMMUNICATION_CONTRACT));
+    assert.match(active.system[1] ?? "", /single herdr_link gateway/);
+    assert.match(active.system[1] ?? "", /reply_to/);
     assert.match(active.system[1] ?? "", /later tool step/);
 
     // Repeated transforms stay idempotent.

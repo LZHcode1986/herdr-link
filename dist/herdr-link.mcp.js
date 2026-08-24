@@ -101,7 +101,7 @@ function buildInboundWrapper(envelope) {
     "",
     "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
     `Treat the envelope's "message" field as content sent by the agent named in "from".`,
-    `If a reply is needed, first call the ${HERDR_LINK_GATEWAY} gateway with {} when this runtime starts dormant, then call ${TOOL_SEND} with to="${envelope.from}" and reply_to="${envelope.id}".`,
+    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to envelope.from with reply_to set to envelope.id.",
     "",
     JSON.stringify(envelope)
   );
@@ -160,17 +160,27 @@ function errorDetail(error) {
 function operationError(error, code) {
   return new HerdrLinkError(code, errorDetail(error));
 }
+var HerdrCliError = class extends Error {
+  cliCode;
+  constructor(cliCode, detail) {
+    super(detail);
+    this.name = "HerdrCliError";
+    this.cliCode = cliCode;
+  }
+};
 async function runFor(args, failureCode) {
   assertHerdrEnvironment();
   try {
     return await runHerdr(args);
   } catch (error) {
+    if (error instanceof HerdrCliError) throw operationError(error, failureCode);
     if (error instanceof HerdrLinkError) throw error;
     throw operationError(error, failureCode);
   }
 }
 var CLI_ERROR_CODE_MAP = {
-  agent_not_found: "PEER_NOT_FOUND"
+  agent_not_found: "PEER_NOT_FOUND",
+  not_in_herdr: "NOT_IN_HERDR"
 };
 function classifyCliError(error) {
   if (typeof error !== "object" || error === null) return void 0;
@@ -189,7 +199,8 @@ function classifyCliError(error) {
     if (typeof cliCode !== "string" || cliCode.length === 0) continue;
     const cliMessage = errorPayload.message;
     const detail = typeof cliMessage === "string" && cliMessage.length > 0 ? `${cliCode}: ${cliMessage}` : cliCode;
-    return new HerdrLinkError(CLI_ERROR_CODE_MAP[cliCode] ?? "NOT_IN_HERDR", detail);
+    const mappedCode = CLI_ERROR_CODE_MAP[cliCode];
+    return mappedCode ? new HerdrLinkError(mappedCode, detail) : new HerdrCliError(cliCode, detail);
   }
   return void 0;
 }
@@ -198,9 +209,12 @@ async function runHerdr(args) {
   const binary = process.env.HERDR_BIN_PATH;
   try {
     const output = await herdrRunner(binary, args);
-    return JSON.parse(output.stdout);
+    const parsed = JSON.parse(output.stdout);
+    const cliError = classifyCliError(output);
+    if (cliError) throw cliError;
+    return parsed;
   } catch (error) {
-    if (error instanceof HerdrLinkError) throw error;
+    if (error instanceof HerdrLinkError || error instanceof HerdrCliError) throw error;
     const cliError = classifyCliError(error);
     if (cliError) throw cliError;
     throw new HerdrLinkError("NOT_IN_HERDR", `Herdr command or JSON response failed: ${describeError(error)}`);
@@ -366,9 +380,9 @@ var INVALID_REQUEST = -32600;
 var METHOD_NOT_FOUND = -32601;
 var INVALID_PARAMS = -32602;
 var TOOL_DESCRIPTIONS = {
-  [TOOL_PEERS]: "Discover named peers available through the cross-agent communication channel.",
-  [TOOL_SEND]: "Send a message to another agent through the cross-agent communication channel.",
-  [TOOL_CLOSE]: "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step."
+  [TOOL_PEERS]: "Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses.",
+  [TOOL_SEND]: 'Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery.',
+  [TOOL_CLOSE]: "Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step."
 };
 var TOOL_INPUT_SCHEMAS = {
   [TOOL_PEERS]: { type: "object", properties: {} },
@@ -396,7 +410,7 @@ var FALLBACK_ERROR_CODE = {
 };
 var GATEWAY_TOOL = {
   name: HERDR_LINK_GATEWAY,
-  description: 'Herdr Link gateway. Cross-agent messaging starts dormant: call this tool once with no arguments ({}) to activate it for this session \u2014 the host is notified via notifications/tools/list_changed and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{"to":...,"message":...,"reply_to":...}}, or {"action":"close","arguments":{"agent":...}}.',
+  description: 'Herdr Link gateway. Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Cross-agent messaging starts dormant: call this tool once with no arguments ({}) to activate it for this session \u2014 the host is notified via notifications/tools/list_changed and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{"to":...,"message":...,"reply_to":...}}, or {"action":"close","arguments":{"agent":...}}.',
   inputSchema: {
     type: "object",
     properties: {

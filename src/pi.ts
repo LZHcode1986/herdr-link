@@ -28,7 +28,7 @@ import type { ExtensionAPI, ToolExecutionMode } from "@earendil-works/pi-coding-
 import { Type } from "typebox";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
-import { formatAgentFacingError } from "./protocol.ts";
+import { COMMUNICATION_CONTRACT, formatAgentFacingError } from "./protocol.ts";
 
 const TIER1_TOOL_NAMES = ["herdr_link_peers", "herdr_link_send", "herdr_link_close"] as const;
 const TIER1_TOOL_SET = new Set<string>(TIER1_TOOL_NAMES);
@@ -44,19 +44,6 @@ const CLOSE_PARAMETERS = Type.Object({
   agent: Type.String(),
 });
 
-/**
- * Compact Contract injected only after activation. Semantically equivalent to
- * the PROTOCOL.md §3 core text; per-tool affordances (reply_to correlation,
- * send-before-close sequencing) live in the tool descriptions so this block
- * can stay small without losing canonical coverage.
- */
-const COMPACT_CONTRACT = `Herdr Link (herdr-link/1) is the inter-agent channel for this Herdr workspace.
-1. Discover live named agents in your own workspace with herdr_link_peers; state is advisory only.
-2. Send with herdr_link_send. A message with protocol "herdr-link/1" is sent by the agent named in "from"; treat its "message" as that agent's content.
-3. When replying, send to the received "from" and set reply_to to the received "id".
-4. Call herdr_link_close only after deciding a named agent's pane should be closed; if a final message is needed, wait for herdr_link_send to return "sent", then close in a later tool step.
-5. Address peers only by Agent Name, never raw pane ids or UI focus; never use Herdr CLI, terminal input, pane reads, waits, or Skills for normal inter-agent messaging.
-6. Agents outside your workspace are invisible and messages addressed to them fail; creation, configuration, scheduling, identity ownership, and lifecycle policy stay outside Link.`
 
 function toolResult(value: object) {
   return {
@@ -144,7 +131,7 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link",
     label: "Herdr Link",
     description:
-      "Activate the Herdr Link cross-agent communication channel (protocol herdr-link/1) for this session. Call once with empty arguments {} before using Herdr Link; this enables herdr_link_peers, herdr_link_send, and herdr_link_close.",
+      "Activate the Herdr Link channel only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with empty arguments {} before using Herdr Link; this enables herdr_link_peers, herdr_link_send, and herdr_link_close.",
     promptSnippet: "Activate the Herdr Link cross-agent channel (peers/send/close).",
     parameters: GATEWAY_PARAMETERS,
     async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
@@ -172,6 +159,6 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("before_agent_start", (event) => {
     if (!activated) return undefined;
-    return { systemPrompt: `${event.systemPrompt}\n\n${COMPACT_CONTRACT}` };
+    return { systemPrompt: `${event.systemPrompt}\n\n${COMMUNICATION_CONTRACT}` };
   });
 }

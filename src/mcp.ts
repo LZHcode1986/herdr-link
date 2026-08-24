@@ -73,11 +73,11 @@ type CanonicalToolName = typeof TOOL_PEERS | typeof TOOL_SEND | typeof TOOL_CLOS
 
 const TOOL_DESCRIPTIONS: Record<CanonicalToolName, string> = {
   [TOOL_PEERS]:
-    "Discover named peers available through the cross-agent communication channel.",
+    "Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses.",
   [TOOL_SEND]:
-    "Send a message to another agent through the cross-agent communication channel.",
+    'Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery.',
   [TOOL_CLOSE]:
-    "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step.",
+    "Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step.",
 };
 
 const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
@@ -115,7 +115,7 @@ const FALLBACK_ERROR_CODE: Record<CanonicalToolName, LinkErrorCode> = {
 const GATEWAY_TOOL: { name: typeof HERDR_LINK_GATEWAY; description: string; inputSchema: Record<string, unknown> } = {
   name: HERDR_LINK_GATEWAY,
   description:
-    "Herdr Link gateway. Cross-agent messaging starts dormant: call this tool once with no arguments " +
+    "Herdr Link gateway. Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Cross-agent messaging starts dormant: call this tool once with no arguments " +
     "({}) to activate it for this session — the host is notified via notifications/tools/list_changed " +
     "and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. " +
     'If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, ' +

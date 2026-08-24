@@ -175,6 +175,8 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
 
     const gateway = findTool(tools, "herdr_link");
     assert.match(gateway.description, /\{\}/);
+    assert.match(gateway.description, /only when the user explicitly asks to use Herdr/);
+    assert.match(gateway.description, /handling an inbound Herdr Link message/);
     assert.ok(typeof gateway.promptSnippet === "string");
 
     for (const name of ["herdr_link_peers", "herdr_link_send", "herdr_link_close"]) {
@@ -253,9 +255,8 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     for (const marker of ["herdr-link/1", "reply_to", "herdr_link_peers", "herdr_link_send", "herdr_link_close", "later tool step"]) {
       assert.ok(injected.includes(marker), `compact Contract must mention ${marker}`);
     }
-    // Compact relative to the canonical §3 block; per-tool affordances are
-    // delegated to descriptions (pinned by the metadata test above).
-    assert.ok(injected.trim().length < COMMUNICATION_CONTRACT.length);
+    // Pi injects the canonical Contract directly; tool descriptions carry the presentation details.
+    assert.equal(injected.trim(), COMMUNICATION_CONTRACT);
 
     // New session returns to dormant: activation is session-scoped only.
     dispatch({ type: "session_start", reason: "new" });

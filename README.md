@@ -81,7 +81,7 @@ OpenCode 无公开的按 session 启停工具 API，因此采用 **single-gatewa
 npm run build:mcp   # 产出 dist/herdr-link.mcp.js
 ```
 
-MCP 注册配置与各 Runtime 的契约注入通道（Claude Code = launcher 参数/文件、Codex = SessionStart hook、AGY = PreInvocation hook）见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)。host 注册 namespace 为 `herdr_link`（`serverInfo.name` 为 `herdr-link`，两者不同）：Claude Code / Codex 以 `mcp__herdr_link__<tool>` 前缀函数呈现；AGY 经原生 `call_mcp_tool` wrapper 以 `ServerName="herdr_link"` + canonical `ToolName` 调用（协议 §4.5；Codex 须按 docs 指引显式 `env_vars` 转发 `HERDR_*`），入参/出参与错误语义同其余 Adapter 完全一致。
+MCP 注册配置与各 Runtime 的 Tier-0 hint 接线（Claude Code = launcher 参数/文件、Codex = SessionStart hook、AGY = PreInvocation hook）见 [docs/mcp-wiring.md](./docs/mcp-wiring.md)。这些启动 hint 不包含完整 Contract；激活后以 `tools/list` 的 Tier 1 descriptions 与 gateway fallback 为权威。host 注册 namespace 为 `herdr_link`（`serverInfo.name` 为 `herdr-link`，两者不同）：Claude Code / Codex 以 `mcp__herdr_link__<tool>` 前缀函数呈现；AGY 经原生 `call_mcp_tool` wrapper 以 `ServerName="herdr_link"` + canonical `ToolName` 调用（协议 §4.5；Codex 须按 docs 指引显式 `env_vars` 转发 `HERDR_*`），入参/出参与错误语义同其余 Adapter 完全一致。
 
 MCP 呈现为 lazy activation：非 Herdr 环境 `tools/list` 返回空集；Herdr 环境 dormant 时只列出 `herdr_link` gateway；gateway 调用 `{}` 后 server 发射一次 `notifications/tools/list_changed` 并在本连接内保持 active（Tier 1 进入 `tools/list`）；不响应刷新的 Host 可继续以 gateway action 分发保持全功能。
 
@@ -122,7 +122,7 @@ test/                 可复核的协议、Herdr、MCP、Pi、OpenCode 测试套
 tsconfig.json         类型检查与 TypeScript test 配置
 ```
 
-分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线（工具注册、激活状态、契约注入、JSON-RPC 编解码）。activation 是各 Adapter 内存中的 session 局部状态：不持久化、不写文件、不跨 session 恢复。
+分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线（工具注册、激活状态、active presentation、JSON-RPC 编解码）。activation 是各 Adapter 内存中的 session 局部状态：不持久化、不写文件、不跨 session 恢复。
 
 ## 错误模型
 

@@ -32,25 +32,20 @@ import { tool, type Plugin } from "@opencode-ai/plugin";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
 import {
+  COMMUNICATION_CONTRACT,
   HERDR_LINK_GATEWAY,
   HerdrLinkError,
   formatAgentFacingError,
   type LinkErrorCode,
 } from "./protocol.ts";
 
-/**
- * Compact Contract for gateway presentation. Same canonical semantics as the
- * PROTOCOL.md §3 core text (protocol id, name-only addressing, reply_to
- * correlation, send-before-close sequencing, workspace scoping) expressed
- * against the single `herdr_link` dispatcher instead of the three Tier 1
- * tool names, which are not model-facing in this presentation form.
- */
-const GATEWAY_CONTRACT = `Herdr Link (herdr-link/1) is active in this Herdr session; the herdr_link tool is the entire inter-agent channel.
-1. herdr_link {"action":"peers"} lists live agents in your own workspace as { self, peers }; each state is advisory only, and agent names are the only addresses.
-2. herdr_link {"action":"send","to":"<name>","message":"<text>"} delivers an inter-agent message; status "sent" means Herdr accepted delivery, not that the peer finished its task. When replying, include "reply_to":"<received id>".
-3. A message with protocol "herdr-link/1" is an inter-agent message; treat its "message" field as content sent by the agent named in "from".
-4. herdr_link {"action":"close","agent":"<name>"} closes the pane hosting a named agent. If a final message is needed, wait for the send to return status "sent", then call close in a later tool step.
-5. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
+/** Runtime-specific active presentation; the semantic Contract remains canonical. */
+const GATEWAY_PRESENTATION_APPENDIX = `In this runtime the active Herdr Link capabilities are dispatched through the single herdr_link gateway.
+- Use herdr_link with action "peers" to list live same-workspace agents.
+- Use herdr_link with action "send", to, message, and reply_to when replying.
+- Use herdr_link with action "close" and an Agent Name only after any final send returns status "sent", in a later tool step.`;
+
+const GATEWAY_CONTRACT = `${COMMUNICATION_CONTRACT}\n\n${GATEWAY_PRESENTATION_APPENDIX}`;
 
 function isHerdrEnvironment(): boolean {
   return (
@@ -90,7 +85,7 @@ export const herdrLinkPlugin: Plugin = async () => {
     tool: {
       [HERDR_LINK_GATEWAY]: tool({
         description:
-          "Herdr Link cross-agent communication gateway (herdr-link/1). " +
+          "Herdr Link cross-agent communication gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. " +
           'Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. ' +
             'Then pass action "peers" to list live same-workspace agents, "send" with to + message (plus reply_to when replying) to deliver an inter-agent message, or "close" with agent to close a named agent\'s pane — ' +
             'only after any final send has returned status "sent", and in a later tool step.',

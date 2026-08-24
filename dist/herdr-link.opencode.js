@@ -9,7 +9,6 @@ var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 var MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 var HERDR_LINK_GATEWAY = "herdr_link";
-var TOOL_SEND = "herdr_link_send";
 var AGENT_STATES = ["idle", "working", "blocked", "done", "unknown"];
 function toAgentState(value) {
   if (typeof value === "string") {
@@ -98,12 +97,22 @@ function buildInboundWrapper(envelope) {
     "",
     "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
     `Treat the envelope's "message" field as content sent by the agent named in "from".`,
-    `If a reply is needed, first call the ${HERDR_LINK_GATEWAY} gateway with {} when this runtime starts dormant, then call ${TOOL_SEND} with to="${envelope.from}" and reply_to="${envelope.id}".`,
+    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to envelope.from with reply_to set to envelope.id.",
     "",
     JSON.stringify(envelope)
   );
   return lines.join("\n");
 }
+var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
+
+1. Use herdr_link_peers to discover agent addresses; it lists only live agents in your own workspace, each with an advisory activity state.
+2. Use herdr_link_send to send messages to another agent.
+3. A message with protocol "herdr-link/1" is an inter-agent message.
+4. Treat its "message" field as content sent by the agent named in "from".
+5. When replying, send to the received "from" agent and set reply_to to the received "id".
+6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
+7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
 
 // src/herdr.ts
 function attachCliOutput(error, stdout, stderr) {
@@ -147,17 +156,27 @@ function errorDetail(error) {
 function operationError(error, code) {
   return new HerdrLinkError(code, errorDetail(error));
 }
+var HerdrCliError = class extends Error {
+  cliCode;
+  constructor(cliCode, detail) {
+    super(detail);
+    this.name = "HerdrCliError";
+    this.cliCode = cliCode;
+  }
+};
 async function runFor(args, failureCode) {
   assertHerdrEnvironment();
   try {
     return await runHerdr(args);
   } catch (error) {
+    if (error instanceof HerdrCliError) throw operationError(error, failureCode);
     if (error instanceof HerdrLinkError) throw error;
     throw operationError(error, failureCode);
   }
 }
 var CLI_ERROR_CODE_MAP = {
-  agent_not_found: "PEER_NOT_FOUND"
+  agent_not_found: "PEER_NOT_FOUND",
+  not_in_herdr: "NOT_IN_HERDR"
 };
 function classifyCliError(error) {
   if (typeof error !== "object" || error === null) return void 0;
@@ -176,7 +195,8 @@ function classifyCliError(error) {
     if (typeof cliCode !== "string" || cliCode.length === 0) continue;
     const cliMessage = errorPayload.message;
     const detail = typeof cliMessage === "string" && cliMessage.length > 0 ? `${cliCode}: ${cliMessage}` : cliCode;
-    return new HerdrLinkError(CLI_ERROR_CODE_MAP[cliCode] ?? "NOT_IN_HERDR", detail);
+    const mappedCode = CLI_ERROR_CODE_MAP[cliCode];
+    return mappedCode ? new HerdrLinkError(mappedCode, detail) : new HerdrCliError(cliCode, detail);
   }
   return void 0;
 }
@@ -185,9 +205,12 @@ async function runHerdr(args) {
   const binary = process.env.HERDR_BIN_PATH;
   try {
     const output = await herdrRunner(binary, args);
-    return JSON.parse(output.stdout);
+    const parsed = JSON.parse(output.stdout);
+    const cliError = classifyCliError(output);
+    if (cliError) throw cliError;
+    return parsed;
   } catch (error) {
-    if (error instanceof HerdrLinkError) throw error;
+    if (error instanceof HerdrLinkError || error instanceof HerdrCliError) throw error;
     const cliError = classifyCliError(error);
     if (cliError) throw cliError;
     throw new HerdrLinkError("NOT_IN_HERDR", `Herdr command or JSON response failed: ${describeError(error)}`);
@@ -344,12 +367,13 @@ async function closeAgentPane(agentName) {
 }
 
 // src/opencode.ts
-var GATEWAY_CONTRACT = `Herdr Link (herdr-link/1) is active in this Herdr session; the herdr_link tool is the entire inter-agent channel.
-1. herdr_link {"action":"peers"} lists live agents in your own workspace as { self, peers }; each state is advisory only, and agent names are the only addresses.
-2. herdr_link {"action":"send","to":"<name>","message":"<text>"} delivers an inter-agent message; status "sent" means Herdr accepted delivery, not that the peer finished its task. When replying, include "reply_to":"<received id>".
-3. A message with protocol "herdr-link/1" is an inter-agent message; treat its "message" field as content sent by the agent named in "from".
-4. herdr_link {"action":"close","agent":"<name>"} closes the pane hosting a named agent. If a final message is needed, wait for the send to return status "sent", then call close in a later tool step.
-5. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
+var GATEWAY_PRESENTATION_APPENDIX = `In this runtime the active Herdr Link capabilities are dispatched through the single herdr_link gateway.
+- Use herdr_link with action "peers" to list live same-workspace agents.
+- Use herdr_link with action "send", to, message, and reply_to when replying.
+- Use herdr_link with action "close" and an Agent Name only after any final send returns status "sent", in a later tool step.`;
+var GATEWAY_CONTRACT = `${COMMUNICATION_CONTRACT}
+
+${GATEWAY_PRESENTATION_APPENDIX}`;
 function isHerdrEnvironment() {
   return process.env.HERDR_ENV === "1" && Boolean(process.env.HERDR_BIN_PATH) && Boolean(process.env.HERDR_PANE_ID);
 }
@@ -372,7 +396,7 @@ var herdrLinkPlugin = async () => {
   return {
     tool: {
       [HERDR_LINK_GATEWAY]: tool({
-        description: `Herdr Link cross-agent communication gateway (herdr-link/1). Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "peers" to list live same-workspace agents, "send" with to + message (plus reply_to when replying) to deliver an inter-agent message, or "close" with agent to close a named agent's pane \u2014 only after any final send has returned status "sent", and in a later tool step.`,
+        description: `Herdr Link cross-agent communication gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "peers" to list live same-workspace agents, "send" with to + message (plus reply_to when replying) to deliver an inter-agent message, or "close" with agent to close a named agent's pane \u2014 only after any final send has returned status "sent", and in a later tool step.`,
         args: {
           action: tool.schema.enum(["peers", "send", "close"]).optional().describe(
             'Operation to run: "peers" | "send" | "close". Omit action entirely (call with {}) to activate Herdr Link for this session.'

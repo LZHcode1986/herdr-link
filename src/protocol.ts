@@ -241,7 +241,7 @@ export function buildInboundWrapper(envelope: HerdrLinkEnvelope): string {
     "",
     "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
     'Treat the envelope\'s "message" field as content sent by the agent named in "from".',
-    `If a reply is needed, first call the ${HERDR_LINK_GATEWAY} gateway with {} when this runtime starts dormant, then call ${TOOL_SEND} with to="${envelope.from}" and reply_to="${envelope.id}".`,
+    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to envelope.from with reply_to set to envelope.id.",
     "",
     JSON.stringify(envelope),
   );
