@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+var MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 var HerdrLinkError = class extends Error {
   code;
   constructor(code, detail) {
@@ -15,6 +16,17 @@ var HerdrLinkError = class extends Error {
     this.code = code;
   }
 };
+var AGENT_ERROR_DETAILS = {
+  NOT_IN_HERDR: "Herdr environment is unavailable",
+  SELF_UNNAMED: "current Agent has no stable live name",
+  PEER_NOT_FOUND: "target agent is not a live peer",
+  SEND_FAILED: "Herdr did not accept message delivery",
+  CLOSE_FAILED: "Herdr pane close failed"
+};
+function formatAgentFacingError(error, fallbackCode) {
+  const code = error instanceof HerdrLinkError ? error.code : fallbackCode;
+  return `${code}: ${AGENT_ERROR_DETAILS[code]}`;
+}
 function createMessageId() {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 10);
@@ -22,6 +34,9 @@ function createMessageId() {
 }
 function isValidAgentName(name) {
   return AGENT_NAME_RE.test(name);
+}
+function isValidMessageId(id) {
+  return MESSAGE_ID_RE.test(id);
 }
 function buildEnvelope(input) {
   if (!isValidAgentName(input.from)) {
@@ -39,8 +54,11 @@ function buildEnvelope(input) {
   if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new HerdrLinkError("SEND_FAILED", "message must be a non-empty string");
   }
-  if (input.reply_to !== void 0 && (typeof input.reply_to !== "string" || input.reply_to === "")) {
-    throw new HerdrLinkError("SEND_FAILED", "reply_to must be a non-empty string when present");
+  if (input.reply_to !== void 0 && !isValidMessageId(input.reply_to)) {
+    throw new HerdrLinkError(
+      "SEND_FAILED",
+      "reply_to must be a valid herdr-link/1 message id when present"
+    );
   }
   const envelope = {
     protocol: PROTOCOL_ID,
@@ -248,14 +266,8 @@ function isHerdrEnvironment() {
 function jsonResult(value) {
   return JSON.stringify(value);
 }
-function rethrowToolError(error) {
-  if (error instanceof HerdrLinkError) {
-    throw new Error(error.message, { cause: error });
-  }
-  if (error instanceof Error) {
-    throw error;
-  }
-  throw new Error(String(error));
+function rethrowToolError(error, fallbackCode) {
+  throw new Error(formatAgentFacingError(error, fallbackCode), { cause: error });
 }
 var herdrLinkPlugin = async () => {
   if (!isHerdrEnvironment()) {
@@ -270,37 +282,37 @@ var herdrLinkPlugin = async () => {
           try {
             return jsonResult(await listPeers());
           } catch (error) {
-            rethrowToolError(error);
+            rethrowToolError(error, "NOT_IN_HERDR");
           }
         }
       }),
       herdr_link_send: tool({
         description: HERDR_LINK_TOOL_DESCRIPTION.send,
         args: {
-          to: tool.schema.string().describe("Target Herdr agent name"),
-          message: tool.schema.string().describe("Message payload"),
-          reply_to: tool.schema.string().optional().describe("Message id being replied to")
+          to: tool.schema.string().regex(AGENT_NAME_RE).describe("Target Herdr agent name"),
+          message: tool.schema.string().min(1).describe("Non-empty message payload"),
+          reply_to: tool.schema.string().regex(MESSAGE_ID_RE).optional().describe("Valid Herdr Link message id being replied to")
         },
         async execute(args) {
           try {
             const envelope = await sendMessage(args.to, args.message, args.reply_to);
             return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
           } catch (error) {
-            rethrowToolError(error);
+            rethrowToolError(error, "SEND_FAILED");
           }
         }
       }),
       herdr_link_close: tool({
         description: HERDR_LINK_TOOL_DESCRIPTION.close,
         args: {
-          agent: tool.schema.string().describe("Target Herdr agent name")
+          agent: tool.schema.string().regex(AGENT_NAME_RE).describe("Target Herdr agent name")
         },
         async execute(args) {
           try {
             await closeAgentPane(args.agent);
             return jsonResult({ status: "closed", agent: args.agent });
           } catch (error) {
-            rethrowToolError(error);
+            rethrowToolError(error, "CLOSE_FAILED");
           }
         }
       })

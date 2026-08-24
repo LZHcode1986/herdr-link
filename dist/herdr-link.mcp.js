@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+var MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 var HerdrLinkError = class extends Error {
   code;
   constructor(code, detail) {
@@ -15,6 +16,17 @@ var HerdrLinkError = class extends Error {
     this.code = code;
   }
 };
+var AGENT_ERROR_DETAILS = {
+  NOT_IN_HERDR: "Herdr environment is unavailable",
+  SELF_UNNAMED: "current Agent has no stable live name",
+  PEER_NOT_FOUND: "target agent is not a live peer",
+  SEND_FAILED: "Herdr did not accept message delivery",
+  CLOSE_FAILED: "Herdr pane close failed"
+};
+function formatAgentFacingError(error, fallbackCode) {
+  const code = error instanceof HerdrLinkError ? error.code : fallbackCode;
+  return `${code}: ${AGENT_ERROR_DETAILS[code]}`;
+}
 function createMessageId() {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 10);
@@ -22,6 +34,9 @@ function createMessageId() {
 }
 function isValidAgentName(name) {
   return AGENT_NAME_RE.test(name);
+}
+function isValidMessageId(id) {
+  return MESSAGE_ID_RE.test(id);
 }
 function buildEnvelope(input) {
   if (!isValidAgentName(input.from)) {
@@ -39,8 +54,11 @@ function buildEnvelope(input) {
   if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new HerdrLinkError("SEND_FAILED", "message must be a non-empty string");
   }
-  if (input.reply_to !== void 0 && (typeof input.reply_to !== "string" || input.reply_to === "")) {
-    throw new HerdrLinkError("SEND_FAILED", "reply_to must be a non-empty string when present");
+  if (input.reply_to !== void 0 && !isValidMessageId(input.reply_to)) {
+    throw new HerdrLinkError(
+      "SEND_FAILED",
+      "reply_to must be a valid herdr-link/1 message id when present"
+    );
   }
   const envelope = {
     protocol: PROTOCOL_ID,
@@ -255,16 +273,16 @@ var TOOL_INPUT_SCHEMAS = {
   herdr_link_send: {
     type: "object",
     properties: {
-      to: { type: "string", description: "Target Herdr agent name" },
-      message: { type: "string", description: "Message payload" },
-      reply_to: { type: "string", description: "Message id being replied to" }
+      to: { type: "string", pattern: AGENT_NAME_RE.source, description: "Target Herdr agent name" },
+      message: { type: "string", minLength: 1, description: "Non-empty message payload" },
+      reply_to: { type: "string", pattern: MESSAGE_ID_RE.source, description: "Valid Herdr Link message id being replied to" }
     },
     required: ["to", "message"]
   },
   herdr_link_close: {
     type: "object",
     properties: {
-      agent: { type: "string", description: "Target Herdr agent name" }
+      agent: { type: "string", pattern: AGENT_NAME_RE.source, description: "Target Herdr agent name" }
     },
     required: ["agent"]
   }
@@ -354,7 +372,7 @@ function createRequestHandler(deps = {}) {
     } catch (error) {
       const linkError = error instanceof HerdrLinkError ? error : new HerdrLinkError(FALLBACK_ERROR_CODE[canonicalName], describeError2(error));
       return respond(id, {
-        content: [{ type: "text", text: linkError.message }],
+        content: [{ type: "text", text: formatAgentFacingError(linkError, linkError.code) }],
         isError: true
       });
     }

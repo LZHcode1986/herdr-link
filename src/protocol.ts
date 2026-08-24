@@ -9,6 +9,8 @@ export const PROTOCOL_ID = "herdr-link/1" as const;
 
 /** Herdr agent-name rule: `[a-z][a-z0-9_-]{0,31}`, unique among live agents. */
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+/** Message id rule from PROTOCOL.md §2.3: `hl_<timestamp>_<random>`. */
+export const MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 
 /** The cross-agent message envelope (PROTOCOL.md §2). */
 export interface HerdrLinkEnvelope {
@@ -48,6 +50,21 @@ export class HerdrLinkError extends Error {
   }
 }
 
+/** Stable Agent-facing details; raw Herdr diagnostics remain internal to the error object. */
+export const AGENT_ERROR_DETAILS: Record<LinkErrorCode, string> = {
+  NOT_IN_HERDR: "Herdr environment is unavailable",
+  SELF_UNNAMED: "current Agent has no stable live name",
+  PEER_NOT_FOUND: "target agent is not a live peer",
+  SEND_FAILED: "Herdr did not accept message delivery",
+  CLOSE_FAILED: "Herdr pane close failed",
+};
+
+/** Formats a Link failure without exposing raw Herdr topology or CLI details. */
+export function formatAgentFacingError(error: unknown, fallbackCode: LinkErrorCode): string {
+  const code = error instanceof HerdrLinkError ? error.code : fallbackCode;
+  return `${code}: ${AGENT_ERROR_DETAILS[code]}`;
+}
+
 /** Creates a unique message id: `hl_` + base36 timestamp + random suffix. */
 export function createMessageId(): string {
   const ts = Date.now().toString(36);
@@ -57,6 +74,10 @@ export function createMessageId(): string {
 
 export function isValidAgentName(name: string): boolean {
   return AGENT_NAME_RE.test(name);
+}
+
+export function isValidMessageId(id: string): boolean {
+  return MESSAGE_ID_RE.test(id);
 }
 
 export interface BuildEnvelopeInput {
@@ -87,8 +108,11 @@ export function buildEnvelope(input: BuildEnvelopeInput): HerdrLinkEnvelope {
   if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new HerdrLinkError("SEND_FAILED", "message must be a non-empty string");
   }
-  if (input.reply_to !== undefined && (typeof input.reply_to !== "string" || input.reply_to === "")) {
-    throw new HerdrLinkError("SEND_FAILED", "reply_to must be a non-empty string when present");
+  if (input.reply_to !== undefined && !isValidMessageId(input.reply_to)) {
+    throw new HerdrLinkError(
+      "SEND_FAILED",
+      "reply_to must be a valid herdr-link/1 message id when present",
+    );
   }
   const envelope: HerdrLinkEnvelope = {
     protocol: PROTOCOL_ID,
@@ -114,13 +138,14 @@ export function isHerdrLinkEnvelope(value: unknown): value is HerdrLinkEnvelope 
   return (
     v.protocol === PROTOCOL_ID &&
     typeof v.id === "string" &&
-    v.id !== "" &&
+    isValidMessageId(v.id) &&
     typeof v.from === "string" &&
-    v.from !== "" &&
+    isValidAgentName(v.from) &&
     typeof v.to === "string" &&
-    v.to !== "" &&
+    isValidAgentName(v.to) &&
     typeof v.message === "string" &&
-    (v.reply_to === undefined || typeof v.reply_to === "string")
+    v.message.trim() !== "" &&
+    (v.reply_to === undefined || (typeof v.reply_to === "string" && isValidMessageId(v.reply_to)))
   );
 }
 

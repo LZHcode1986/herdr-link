@@ -7,11 +7,11 @@
 ```text
 dist/herdr-link.mcp.js   单文件 bundle（esbuild 产出，行分隔 JSON-RPC over stdio）
 工具面                    herdr_link_peers / herdr_link_send / herdr_link_close（canonical 名）
-呈现方式                  Codex = mcp__herdr_link__<tool>
+呈现方式                  Claude Code / Codex = mcp__herdr_link__<tool>
                          AGY   = call_mcp_tool(ServerName/ToolName/Arguments)
 错误语义                  五个 Link error 一律 isError:true + "CODE: detail" 文本（PROTOCOL §7）
 零副作用                  非 Herdr 环境 tools/list 返回 []，模型无感知
-契约注入                  Claude Code = launcher --append-system-prompt；
+契约注入                  Claude Code = launcher --append-system-prompt-file；
                          Codex = SessionStart hook additionalContext；
                          AGY = PreInvocation ephemeralMessage hook（主通道）
 ```
@@ -24,9 +24,9 @@ npm install && npm run build:mcp
 BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 ```
 
-运行只依赖 Node ≥ 22。server 由各 Runtime 在 Herdr managed pane 内拉起；**`HERDR_*` 环境变量是否透传给 MCP 子进程由各 Runtime 决定**——Codex 必须显式 `env_vars` 转发（§3），AGY 实测原生透传（§4），其余 Runtime 接入时先实测。
+运行只依赖 Node ≥ 22.6。server 由各 Runtime 在 Herdr managed pane 内拉起；**`HERDR_*` 环境变量是否透传给 MCP 子进程由各 Runtime 决定**——Codex 必须显式 `env_vars` 转发（§3），AGY 实测原生透传（§4），其余 Runtime 接入时先实测。
 
-**命名约束**：Codex / AGY 的 host registration namespace 均使用 `herdr_link`（下划线；连字符名在 codex code-mode 工具面有兼容性问题）。Codex 以 prefix 形式呈现、AGY 以 wrapper 形式呈现，契约附录分别由 `buildMcpPrefixedCommunicationContract()` 与 `buildMcpWrapperCommunicationContract()` 生成（见 §1.2 / §1.3）。
+**命名约束**：Claude Code / Codex / AGY 的 host registration namespace 均使用 `herdr_link`（下划线；连字符名在 Codex code-mode 工具面有兼容性问题）。Claude Code / Codex 以 prefix 形式呈现、AGY 以 wrapper 形式呈现，契约附录分别由 `buildMcpPrefixedCommunicationContract()` 与 `buildMcpWrapperCommunicationContract()` 生成（见 §1.2 / §1.3）。
 
 ## 1. 契约注入文本（canonical 共享 + 按 Runtime 追加呈现附录）
 

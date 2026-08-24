@@ -94,9 +94,9 @@ MCP 注册配置与各 Runtime 的契约注入通道（Claude Code = launcher �
 
 ## 开发
 
-发布仓库仅包含扩展源码及发布所需的 `package.json`、`PROTOCOL.md`、`README.md` 与 `.gitignore`。完整开发环境（含 `test/`、`tsconfig.json` 等）保留在本机，不作为发布物。依赖安装、类型检查和单元测试等命令仅适用于本机开发副本，不是发布仓库的使用步骤。
+仓库包含完整的可复核开发组件（`test/`、`tsconfig.json`）；npm 发布包由 `package.json` 的 `files` allowlist 控制，不包含测试与本机设计文档。依赖安装、类型检查和单元测试命令均可在仓库副本中复现。
 
-### 发布仓库结构
+### 仓库结构
 
 ```text
 PROTOCOL.md          协议唯一规范（Envelope、Contract、工具语义、错误模型）
@@ -111,6 +111,8 @@ src/mcp.ts           共享 stdio MCP server（Claude Code / Codex / AGY）：JS
 docs/mcp-wiring.md   MCP Adapter 三家 Runtime 的注册与契约注入接线指南
 dist/herdr-link.opencode.js  OpenCode 单文件 bundle（esbuild 构建产物）
 dist/herdr-link.mcp.js       共享 MCP server 单文件 bundle（esbuild 构建产物）
+test/                 可复核的协议、Herdr、MCP、Pi、OpenCode 测试套件
+tsconfig.json         类型检查与 TypeScript test 配置
 ```
 
 分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线（工具注册、契约注入、JSON-RPC 编解码），无长期状态。

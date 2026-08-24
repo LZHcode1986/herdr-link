@@ -156,7 +156,7 @@ test("MCP server request handler", async (t) => {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "herdr_link_send", arguments: { to: "worker-a", message: "hello", reply_to: "hl_prev" } },
+      params: { name: "herdr_link_send", arguments: { to: "worker-a", message: "hello", reply_to: "hl_prev_1" } },
     });
     const sentResult = sent?.result as { content: Array<{ text: string }> };
     assert.deepEqual(JSON.parse(sentResult.content[0]!.text), { status: "sent", id: "hl_unit_1", to: "worker-a" });
@@ -176,7 +176,7 @@ test("MCP server request handler", async (t) => {
     const handler = handlerWith({
       sendMessage: (to: string, message: string, reply_to?: string) => {
         captured.push([to, message, reply_to]);
-        return ok({ status: "sent" as const, id: "hl_x", to });
+        return ok({ status: "sent" as const, id: "hl_x_1", to });
       },
     });
     await handler({
@@ -190,7 +190,7 @@ test("MCP server request handler", async (t) => {
 
   await t.test("maps Link errors to isError:true CODE-prefixed text (smoke: isError passthrough)", async () => {
     const handler = handlerWith({
-      listPeers: () => Promise.reject(new HerdrLinkError("SELF_UNNAMED", "current Herdr agent has no valid name")),
+      listPeers: () => Promise.reject(new HerdrLinkError("SELF_UNNAMED", "agent target wH:p1 not found")),
       sendMessage: () =>
         Promise.reject(new HerdrLinkError("PEER_NOT_FOUND", 'target agent "ghost" is not a live peer')),
     });
@@ -198,7 +198,7 @@ test("MCP server request handler", async (t) => {
     const peers = await handler({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "herdr_link_peers" } });
     const peersResult = peers?.result as { content: Array<{ text: string }>; isError?: boolean };
     assert.equal(peersResult.isError, true);
-    assert.equal(peersResult.content[0]!.text, "SELF_UNNAMED: current Herdr agent has no valid name");
+    assert.equal(peersResult.content[0]!.text, "SELF_UNNAMED: current Agent has no stable live name");
 
     const sent = await handler({
       jsonrpc: "2.0",
@@ -208,7 +208,7 @@ test("MCP server request handler", async (t) => {
     });
     const sentResult = sent?.result as { content: Array<{ text: string }>; isError?: boolean };
     assert.equal(sentResult.isError, true);
-    assert.equal(sentResult.content[0]!.text, 'PEER_NOT_FOUND: target agent "ghost" is not a live peer');
+    assert.equal(sentResult.content[0]!.text, "PEER_NOT_FOUND: target agent is not a live peer");
   });
 
   await t.test("wraps unexpected exceptions with the operation fallback code", async () => {
@@ -221,7 +221,7 @@ test("MCP server request handler", async (t) => {
     const peers = await handler({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "herdr_link_peers" } });
     assert.equal(
       (peers?.result as { content: Array<{ text: string }> }).content[0]!.text,
-      "NOT_IN_HERDR: oops",
+      "NOT_IN_HERDR: Herdr environment is unavailable",
     );
     const sent = await handler({
       jsonrpc: "2.0",
@@ -229,14 +229,14 @@ test("MCP server request handler", async (t) => {
       method: "tools/call",
       params: { name: "herdr_link_send", arguments: { to: "a", message: "m" } },
     });
-    assert.equal((sent?.result as { content: Array<{ text: string }> }).content[0]!.text, "SEND_FAILED: boom");
+    assert.equal((sent?.result as { content: Array<{ text: string }> }).content[0]!.text, "SEND_FAILED: Herdr did not accept message delivery");
     const closed = await handler({
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
       params: { name: "herdr_link_close", arguments: { agent: "a" } },
     });
-    assert.match((closed?.result as { content: Array<{ text: string }> }).content[0]!.text, /^CLOSE_FAILED: /);
+    assert.equal((closed?.result as { content: Array<{ text: string }> }).content[0]!.text, "CLOSE_FAILED: Herdr pane close failed");
   });
 
   await t.test("treats unknown tools and malformed params as protocol-level errors", async () => {
@@ -262,7 +262,7 @@ test("MCP server request handler", async (t) => {
     });
     const result = badArguments?.result as { content: Array<{ text: string }>; isError?: boolean };
     assert.equal(result.isError, true);
-    assert.equal(result.content[0]!.text, 'PEER_NOT_FOUND: "to" must be a string');
+    assert.equal(result.content[0]!.text, "PEER_NOT_FOUND: target agent is not a live peer");
   });
 
   await t.test("declares per-runtime presentation appendices (§4.4)", () => {

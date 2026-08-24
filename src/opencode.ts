@@ -1,7 +1,7 @@
 import { tool, type Plugin } from "@opencode-ai/plugin";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
-import { COMMUNICATION_CONTRACT, HerdrLinkError } from "./protocol.ts";
+import { AGENT_NAME_RE, COMMUNICATION_CONTRACT, formatAgentFacingError, MESSAGE_ID_RE } from "./protocol.ts";
 
 const HERDR_LINK_TOOL_DESCRIPTION = {
   peers: "Discover named peers available through the cross-agent communication channel.",
@@ -22,14 +22,8 @@ function jsonResult(value: object): string {
   return JSON.stringify(value);
 }
 
-function rethrowToolError(error: unknown): never {
-  if (error instanceof HerdrLinkError) {
-    throw new Error(error.message, { cause: error });
-  }
-  if (error instanceof Error) {
-    throw error;
-  }
-  throw new Error(String(error));
+function rethrowToolError(error: unknown, fallbackCode: "NOT_IN_HERDR" | "SEND_FAILED" | "CLOSE_FAILED"): never {
+  throw new Error(formatAgentFacingError(error, fallbackCode), { cause: error });
 }
 
 export const herdrLinkPlugin: Plugin = async () => {
@@ -46,37 +40,37 @@ export const herdrLinkPlugin: Plugin = async () => {
           try {
             return jsonResult(await listPeers());
           } catch (error) {
-            rethrowToolError(error);
+            rethrowToolError(error, "NOT_IN_HERDR");
           }
         },
       }),
       herdr_link_send: tool({
         description: HERDR_LINK_TOOL_DESCRIPTION.send,
         args: {
-          to: tool.schema.string().describe("Target Herdr agent name"),
-          message: tool.schema.string().describe("Message payload"),
-          reply_to: tool.schema.string().optional().describe("Message id being replied to"),
+          to: tool.schema.string().regex(AGENT_NAME_RE).describe("Target Herdr agent name"),
+          message: tool.schema.string().min(1).describe("Non-empty message payload"),
+          reply_to: tool.schema.string().regex(MESSAGE_ID_RE).optional().describe("Valid Herdr Link message id being replied to"),
         },
         async execute(args) {
           try {
             const envelope = await sendMessage(args.to, args.message, args.reply_to);
             return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
           } catch (error) {
-            rethrowToolError(error);
+            rethrowToolError(error, "SEND_FAILED");
           }
         },
       }),
       herdr_link_close: tool({
         description: HERDR_LINK_TOOL_DESCRIPTION.close,
         args: {
-          agent: tool.schema.string().describe("Target Herdr agent name"),
+          agent: tool.schema.string().regex(AGENT_NAME_RE).describe("Target Herdr agent name"),
         },
         async execute(args) {
           try {
             await closeAgentPane(args.agent);
             return jsonResult({ status: "closed", agent: args.agent });
           } catch (error) {
-            rethrowToolError(error);
+            rethrowToolError(error, "CLOSE_FAILED");
           }
         },
       }),

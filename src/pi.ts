@@ -2,16 +2,16 @@ import type { ExtensionAPI, ToolExecutionMode } from "@earendil-works/pi-coding-
 import { Type } from "typebox";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
-import { COMMUNICATION_CONTRACT, HerdrLinkError } from "./protocol.ts";
+import { AGENT_NAME_RE, COMMUNICATION_CONTRACT, formatAgentFacingError, MESSAGE_ID_RE } from "./protocol.ts";
 
 const PEERS_PARAMETERS = Type.Object({});
 const SEND_PARAMETERS = Type.Object({
-  to: Type.String(),
-  message: Type.String(),
-  reply_to: Type.Optional(Type.String()),
+  to: Type.String({ pattern: AGENT_NAME_RE.source }),
+  message: Type.String({ minLength: 1 }),
+  reply_to: Type.Optional(Type.String({ pattern: MESSAGE_ID_RE.source })),
 });
 const CLOSE_PARAMETERS = Type.Object({
-  agent: Type.String(),
+  agent: Type.String({ pattern: AGENT_NAME_RE.source }),
 });
 
 function toolResult(value: object) {
@@ -21,14 +21,9 @@ function toolResult(value: object) {
   };
 }
 
-function rethrowToolError(error: unknown): never {
-  if (error instanceof HerdrLinkError) {
-    // Pi marks errors thrown by execute() as tool errors. HerdrLinkError.message
-    // already has the canonical `CODE: detail` form from protocol.ts.
-    const toolError = new Error(error.message, { cause: error });
-    throw toolError;
-  }
-  throw error;
+function rethrowToolError(error: unknown, fallbackCode: "NOT_IN_HERDR" | "SEND_FAILED" | "CLOSE_FAILED"): never {
+  const toolError = new Error(formatAgentFacingError(error, fallbackCode), { cause: error });
+  throw toolError;
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -57,7 +52,7 @@ export default function (pi: ExtensionAPI): void {
       try {
         return toolResult(await listPeers());
       } catch (error) {
-        rethrowToolError(error);
+        rethrowToolError(error, "NOT_IN_HERDR");
       }
     },
   });
@@ -77,7 +72,7 @@ export default function (pi: ExtensionAPI): void {
         const envelope = await sendMessage(params.to, params.message, params.reply_to);
         return toolResult({ status: "sent", id: envelope.id, to: envelope.to });
       } catch (error) {
-        rethrowToolError(error);
+        rethrowToolError(error, "SEND_FAILED");
       }
     },
   });
@@ -100,7 +95,7 @@ export default function (pi: ExtensionAPI): void {
         await closeAgentPane(params.agent);
         return toolResult({ status: "closed", agent: params.agent });
       } catch (error) {
-        rethrowToolError(error);
+        rethrowToolError(error, "CLOSE_FAILED");
       }
     },
   });

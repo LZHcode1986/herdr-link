@@ -91,7 +91,7 @@ test("Herdr control layer", async (t) => {
       assert.equal(await getSelf(), "brain");
       assert.deepEqual(await listPeers(), { self: "brain", peers: ["worker-a", "worker_b"] });
 
-      const sent = await sendMessage("worker-a", "hello", "hl_previous");
+      const sent = await sendMessage("worker-a", "hello", "hl_previous_1");
       assert.equal(sent.status, "sent");
       assert.equal(sent.to, "worker-a");
 
@@ -100,7 +100,7 @@ test("Herdr control layer", async (t) => {
       assert.equal(envelope.from, "brain");
       assert.equal(envelope.to, "worker-a");
       assert.equal(envelope.message, "hello");
-      assert.equal(envelope.reply_to, "hl_previous");
+      assert.equal(envelope.reply_to, "hl_previous_1");
       assert.equal(sent.id, envelope.id);
       assert.deepEqual(calls[4]!.args.slice(0, 3), ["agent", "prompt", "worker-a"]);
       assert.equal(calls[4]!.args.length, 4);

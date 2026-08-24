@@ -11,9 +11,12 @@ import { pathToFileURL } from "node:url";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
 import {
+  AGENT_NAME_RE,
   COMMUNICATION_CONTRACT,
   HERDR_LINK_TOOLS,
+  MESSAGE_ID_RE,
   HerdrLinkError,
+  formatAgentFacingError,
   type LinkErrorCode,
 } from "./protocol.ts";
 
@@ -56,16 +59,16 @@ const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
   herdr_link_send: {
     type: "object",
     properties: {
-      to: { type: "string", description: "Target Herdr agent name" },
-      message: { type: "string", description: "Message payload" },
-      reply_to: { type: "string", description: "Message id being replied to" },
+      to: { type: "string", pattern: AGENT_NAME_RE.source, description: "Target Herdr agent name" },
+      message: { type: "string", minLength: 1, description: "Non-empty message payload" },
+      reply_to: { type: "string", pattern: MESSAGE_ID_RE.source, description: "Valid Herdr Link message id being replied to" },
     },
     required: ["to", "message"],
   },
   herdr_link_close: {
     type: "object",
     properties: {
-      agent: { type: "string", description: "Target Herdr agent name" },
+      agent: { type: "string", pattern: AGENT_NAME_RE.source, description: "Target Herdr agent name" },
     },
     required: ["agent"],
   },
@@ -202,7 +205,7 @@ export function createRequestHandler(
       // PROTOCOL.md §7: every Link failure is a local tool failure returned as
       // isError:true with "CODE: detail" text — never a crash, never an envelope.
       return respond(id, {
-        content: [{ type: "text", text: linkError.message }],
+        content: [{ type: "text", text: formatAgentFacingError(linkError, linkError.code) }],
         isError: true,
       });
     }
