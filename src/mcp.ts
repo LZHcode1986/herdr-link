@@ -6,14 +6,28 @@
  * dependencies, no @modelcontextprotocol/sdk). Tool execution reuses the
  * herdr.ts control layer. Tool gating and error semantics follow
  * PROTOCOL.md §7; tool-name presentation follows PROTOCOL.md §4.4.
+ *
+ * Lazy presentation (blueprint v2): the tool surface is session-local and
+ * dormant until activated. Outside Herdr, `tools/list` is empty. Inside
+ * Herdr, a dormant session lists only the Tier 0 `herdr_link` gateway;
+ * calling the gateway with `{}` activates THIS server session (per stdio
+ * connection memory), emits `notifications/tools/list_changed`, and from
+ * then on `tools/list` additionally offers the canonical Tier 1 tools.
+ * Hosts that never refresh can keep dispatching through explicit gateway
+ * actions (`{"action":"send","arguments":{...}}`). No daemon, no global
+ * state: activation lives and dies with the connection.
  */
 import { pathToFileURL } from "node:url";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
 import {
   COMMUNICATION_CONTRACT,
+  HERDR_LINK_GATEWAY,
   HERDR_LINK_TOOLS,
   HerdrLinkError,
+  TOOL_CLOSE,
+  TOOL_PEERS,
+  TOOL_SEND,
   formatAgentFacingError,
   type LinkErrorCode,
 } from "./protocol.ts";
@@ -23,6 +37,12 @@ export const MCP_SERVER_NAME = "herdr-link";
 export const MCP_SERVER_VERSION = "0.1.0";
 /** Fallback protocol version advertised when the client sends none. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+/**
+ * Emitted once when the gateway activates the session (MCP 2025-06-18
+ * `tools.listChanged`): the host is expected to refetch `tools/list`.
+ */
+export const TOOLS_LIST_CHANGED = "notifications/tools/list_changed";
 
 /**
  * JSON-RPC reserved error codes — transport/protocol-level failures only.
@@ -41,20 +61,28 @@ export interface JsonRpcResponse {
   error?: { code: number; message: string };
 }
 
-type CanonicalToolName = (typeof HERDR_LINK_TOOLS)[number];
+/**
+ * Server-to-host notification outlet. Unit tests inject a capturing sink;
+ * the default sink writes the notification as one more single-line JSON
+ * record on stdout — notifications never produce a response and stdout
+ * never carries diagnostics.
+ */
+export type NotificationSink = (notification: Record<string, unknown>) => void;
+
+type CanonicalToolName = typeof TOOL_PEERS | typeof TOOL_SEND | typeof TOOL_CLOSE;
 
 const TOOL_DESCRIPTIONS: Record<CanonicalToolName, string> = {
-  herdr_link_peers:
+  [TOOL_PEERS]:
     "Discover named peers available through the cross-agent communication channel.",
-  herdr_link_send:
+  [TOOL_SEND]:
     "Send a message to another agent through the cross-agent communication channel.",
-  herdr_link_close:
+  [TOOL_CLOSE]:
     "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step.",
 };
 
 const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
-  herdr_link_peers: { type: "object", properties: {} },
-  herdr_link_send: {
+  [TOOL_PEERS]: { type: "object", properties: {} },
+  [TOOL_SEND]: {
     type: "object",
     properties: {
       to: { type: "string", description: "Target Herdr agent name" },
@@ -63,7 +91,7 @@ const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
     },
     required: ["to", "message"],
   },
-  herdr_link_close: {
+  [TOOL_CLOSE]: {
     type: "object",
     properties: {
       agent: { type: "string", description: "Target Herdr agent name" },
@@ -74,9 +102,40 @@ const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
 
 /** Unexpected exceptions fall back to the operation's own failure code so the §7 vocabulary stays closed. */
 const FALLBACK_ERROR_CODE: Record<CanonicalToolName, LinkErrorCode> = {
-  herdr_link_peers: "NOT_IN_HERDR",
-  herdr_link_send: "SEND_FAILED",
-  herdr_link_close: "CLOSE_FAILED",
+  [TOOL_PEERS]: "NOT_IN_HERDR",
+  [TOOL_SEND]: "SEND_FAILED",
+  [TOOL_CLOSE]: "CLOSE_FAILED",
+};
+
+/**
+ * Tier 0 gateway tool (blueprint v2): the single always-present registration
+ * surface while dormant, and the explicit action-dispatch fallback for hosts
+ * that do not react to `notifications/tools/list_changed`.
+ */
+const GATEWAY_TOOL: { name: typeof HERDR_LINK_GATEWAY; description: string; inputSchema: Record<string, unknown> } = {
+  name: HERDR_LINK_GATEWAY,
+  description:
+    "Herdr Link gateway. Cross-agent messaging starts dormant: call this tool once with no arguments " +
+    "({}) to activate it for this session — the host is notified via notifications/tools/list_changed " +
+    "and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. " +
+    'If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, ' +
+    '{"action":"send","arguments":{"to":...,"message":...,"reply_to":...}}, or ' +
+    '{"action":"close","arguments":{"agent":...}}.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["activate", "peers", "send", "close"],
+        description:
+          'Omit or use "activate" to turn the session on; other values dispatch the corresponding peers, send, or close capability.',
+      },
+      arguments: {
+        type: "object",
+        description: "Canonical input object of the dispatched tool (ignored for activation).",
+      },
+    },
+  },
 };
 
 /** Same triple gate as the other adapters (PROTOCOL.md §7 NOT_IN_HERDR condition + pane identity). */
@@ -135,16 +194,62 @@ function optionalStringArg(
   return value;
 }
 
+/* ------------------------------------------------------------------ *
+ * stdout plumbing
+ *
+ * Every stdout line — responses and notifications alike — goes through
+ * one serialized writer, so interleaving stays FIFO regardless of
+ * backpressure and stdout never carries anything but complete JSON lines.
+ * ------------------------------------------------------------------ */
+
+type LineWriter = (line: string) => Promise<void>;
+
+function createSerializedLineWriter(stream: NodeJS.WriteStream): LineWriter {
+  let tail: Promise<void> = Promise.resolve();
+  return (line: string): Promise<void> => {
+    const queued = new Promise<void>((done) => {
+      tail = tail.then(() => {
+        if (stream.write(`${line}\n`)) {
+          done();
+          return;
+        }
+        const flushed = (): void => {
+          stream.off("drain", flushed);
+          stream.off("error", flushed);
+          done();
+        };
+        stream.on("drain", flushed);
+        stream.on("error", flushed);
+      });
+    });
+    return queued;
+  };
+}
+
+const writeStdoutLine: LineWriter = createSerializedLineWriter(process.stdout);
+
+/** Default notification sink: one more single-line JSON record on stdout. */
+function stdoutNotificationSink(notification: Record<string, unknown>): void {
+  void writeStdoutLine(JSON.stringify(notification));
+}
+
 export interface McpServerDeps {
   environmentOk?: typeof isHerdrEnvironment;
   listPeers?: typeof listPeers;
   sendMessage?: typeof sendMessage;
   closeAgentPane?: typeof closeAgentPane;
+  /**
+   * Receives server-to-host notifications (currently only
+   * `notifications/tools/list_changed`). Defaults to stdout.
+   */
+  notify?: NotificationSink;
 }
 
 /**
  * Creates the JSON-RPC request handler. All Herdr IO goes through `deps`
  * (real control layer by default), keeping the handler unit-testable.
+ * Activation state is held in this closure — one handler instance per stdio
+ * connection, so sessions never leak across connections.
  */
 export function createRequestHandler(
   deps: McpServerDeps = {},
@@ -153,6 +258,20 @@ export function createRequestHandler(
   const runPeers = deps.listPeers ?? listPeers;
   const runSend = deps.sendMessage ?? sendMessage;
   const runClose = deps.closeAgentPane ?? closeAgentPane;
+  const notify = deps.notify ?? stdoutNotificationSink;
+
+  /** Session-local lazy activation (blueprint v2). True ⇒ Tier 1 tools are listed. */
+  let activated = false;
+
+  /**
+   * Idempotent activation. Emits `notifications/tools/list_changed` exactly
+   * once, on the dormant → active transition.
+   */
+  function activateSession(): void {
+    if (activated) return;
+    activated = true;
+    notify({ jsonrpc: "2.0", method: TOOLS_LIST_CHANGED });
+  }
 
   function respond(id: unknown, result: unknown): JsonRpcResponse {
     return { jsonrpc: "2.0", id, result };
@@ -162,51 +281,118 @@ export function createRequestHandler(
     return { jsonrpc: "2.0", id, error: { code, message } };
   }
 
+  function callSuccess(id: unknown, value: object): JsonRpcResponse {
+    return respond(id, { content: [{ type: "text", text: JSON.stringify(value) }] });
+  }
+
+  // PROTOCOL.md §7: every Link failure is a local tool failure returned as
+  // isError:true with "CODE: detail" text — never a crash, never an envelope.
+  function callFailure(id: unknown, error: unknown, fallbackCode: LinkErrorCode): JsonRpcResponse {
+    const linkError =
+      error instanceof HerdrLinkError
+        ? error
+        : new HerdrLinkError(fallbackCode, describeError(error));
+    return respond(id, {
+      content: [{ type: "text", text: formatAgentFacingError(linkError, linkError.code) }],
+      isError: true,
+    });
+  }
+
+  async function executeCanonical(
+    canonicalName: CanonicalToolName,
+    args: Record<string, unknown>,
+  ): Promise<object> {
+    switch (canonicalName) {
+      case TOOL_PEERS:
+        return await runPeers();
+      case TOOL_SEND: {
+        const to = requireStringArg(args, "to", "PEER_NOT_FOUND");
+        const message = requireStringArg(args, "message", "SEND_FAILED");
+        const reply_to = optionalStringArg(args, "reply_to", "SEND_FAILED");
+        const sent = await runSend(to, message, reply_to);
+        return { status: sent.status, id: sent.id, to: sent.to };
+      }
+      case TOOL_CLOSE: {
+        const agent = requireStringArg(args, "agent", "PEER_NOT_FOUND");
+        return await runClose(agent);
+      }
+    }
+  }
+
+  /** Runs one canonical Tier 1 tool and renders its CallToolResult. */
+  async function callCanonicalTool(
+    id: unknown,
+    canonicalName: CanonicalToolName,
+    args: Record<string, unknown>,
+  ): Promise<JsonRpcResponse> {
+    try {
+      return callSuccess(id, await executeCanonical(canonicalName, args));
+    } catch (error) {
+      return callFailure(id, error, FALLBACK_ERROR_CODE[canonicalName]);
+    }
+  }
+
+  /**
+   * Tier 0 gateway. Activation (`{}` / `{"action":"activate"}`) is idempotent
+   * and reports the canonical surface; explicit actions dispatch onto the
+   * canonical executor so hosts that never refetch `tools/list` keep full
+   * functionality through this single tool.
+   */
+  async function callGateway(id: unknown, args: Record<string, unknown>): Promise<JsonRpcResponse> {
+    if (!environmentOk()) {
+      return callFailure(id, new HerdrLinkError("NOT_IN_HERDR"), "NOT_IN_HERDR");
+    }
+    const action = args.action;
+    if (action === undefined || action === "activate") {
+      activateSession();
+      return callSuccess(id, {
+        status: "active",
+        capabilities: ["peers", "send", "close"],
+      });
+    }
+    if (
+      typeof action !== "string" ||
+      !(["peers", "send", "close"] as readonly string[]).includes(action)
+    ) {
+      return fail(id, INVALID_PARAMS, `Unknown gateway action: ${String(action)}`);
+    }
+    const canonicalName = (
+      action === "peers" ? TOOL_PEERS : action === "send" ? TOOL_SEND : TOOL_CLOSE
+    ) as CanonicalToolName;
+    activateSession();
+    // Prefer the nested canonical arguments object; otherwise accept the
+    // remaining top-level fields directly (deterministic either way).
+    const dispatchArgs = isRecord(args.arguments) ? args.arguments : args;
+    return await callCanonicalTool(id, canonicalName, dispatchArgs);
+  }
+
   async function callTool(
     id: unknown,
     params: Record<string, unknown>,
   ): Promise<JsonRpcResponse> {
     const name = params.name;
-    if (typeof name !== "string" || !HERDR_LINK_TOOLS.includes(name as CanonicalToolName)) {
+    if (typeof name !== "string") {
       return fail(id, INVALID_PARAMS, `Unknown tool: ${String(name ?? "")}`);
     }
-    const canonicalName = name as CanonicalToolName;
     const rawArguments = params.arguments;
     const args = isRecord(rawArguments) ? rawArguments : {};
 
-    try {
-      let value: object;
-      switch (canonicalName) {
-        case "herdr_link_peers":
-          value = await runPeers();
-          break;
-        case "herdr_link_send": {
-          const to = requireStringArg(args, "to", "PEER_NOT_FOUND");
-          const message = requireStringArg(args, "message", "SEND_FAILED");
-          const reply_to = optionalStringArg(args, "reply_to", "SEND_FAILED");
-          const sent = await runSend(to, message, reply_to);
-          value = { status: sent.status, id: sent.id, to: sent.to };
-          break;
-        }
-        case "herdr_link_close": {
-          const agent = requireStringArg(args, "agent", "PEER_NOT_FOUND");
-          value = await runClose(agent);
-          break;
-        }
-      }
-      return respond(id, { content: [{ type: "text", text: JSON.stringify(value) }] });
-    } catch (error) {
-      const linkError =
-        error instanceof HerdrLinkError
-          ? error
-          : new HerdrLinkError(FALLBACK_ERROR_CODE[canonicalName], describeError(error));
-      // PROTOCOL.md §7: every Link failure is a local tool failure returned as
-      // isError:true with "CODE: detail" text — never a crash, never an envelope.
-      return respond(id, {
-        content: [{ type: "text", text: formatAgentFacingError(linkError, linkError.code) }],
-        isError: true,
-      });
+    if (name === HERDR_LINK_GATEWAY) {
+      return await callGateway(id, args);
     }
+    if (!(HERDR_LINK_TOOLS as readonly string[]).includes(name)) {
+      return fail(id, INVALID_PARAMS, `Unknown tool: ${name}`);
+    }
+
+    // PROTOCOL.md §6.1: outside Herdr nothing executes, regardless of what a
+    // stale host-side tool registry still thinks exists.
+    if (!environmentOk()) {
+      return callFailure(id, new HerdrLinkError("NOT_IN_HERDR"), "NOT_IN_HERDR");
+    }
+    // A direct Tier 1 call implies the caller already knows the canonical
+    // surface; activation keeps list/notification state consistent.
+    activateSession();
+    return await callCanonicalTool(id, name as CanonicalToolName, args);
   }
 
   return async (message: unknown): Promise<JsonRpcResponse | null> => {
@@ -233,15 +419,21 @@ export function createRequestHandler(
           // Echoing the client's version maximizes compatibility; clients that
           // do not support our default would disconnect on a mismatch anyway.
           protocolVersion: typeof requested === "string" ? requested : MCP_PROTOCOL_VERSION,
-          capabilities: { tools: {} },
+          capabilities: { tools: { listChanged: true } },
           serverInfo: { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
         });
       }
       case "ping":
         return respond(id, {});
-      case "tools/list":
-        // Zero side-effect gate (ADR-013): outside Herdr the model sees no tools.
-        return respond(id, { tools: environmentOk() ? toolDefinitions() : [] });
+      case "tools/list": {
+        // Zero side-effect gate (ADR-013) + lazy presentation (blueprint v2):
+        // outside Herdr nothing; dormant only the Tier 0 gateway; active the
+        // gateway plus the canonical Tier 1 tools.
+        if (!environmentOk()) return respond(id, { tools: [] });
+        return respond(id, {
+          tools: activated ? [GATEWAY_TOOL, ...toolDefinitions()] : [GATEWAY_TOOL],
+        });
+      }
       case "tools/call": {
         const params = message.params;
         if (!isRecord(params)) {
@@ -257,24 +449,14 @@ export function createRequestHandler(
 
 /**
  * Serves one JSON-RPC exchange per stdin line until EOF. Responses are written
- * to stdout as single-line JSON (JSON.stringify escapes embedded newlines).
- * Nothing else ever touches stdout.
+ * to stdout as single-line JSON (JSON.stringify escapes embedded newlines);
+ * notifications emitted through the default sink interleave in FIFO order on
+ * the same serialized writer. Nothing else ever touches stdout.
  */
 export async function runStdioServer(
   handler: (message: unknown) => Promise<JsonRpcResponse | null>,
 ): Promise<void> {
-  const stdout = process.stdout;
   let buffer = "";
-
-  const writeLine = (line: string): Promise<void> =>
-    new Promise<void>((resolve) => {
-      if (stdout.write(`${line}\n`)) {
-        resolve();
-        return;
-      }
-      stdout.once("drain", () => resolve());
-      stdout.once("error", () => resolve());
-    });
 
   try {
     for await (const chunk of process.stdin) {
@@ -292,7 +474,7 @@ export async function runStdioServer(
         } catch {
           response = failParse();
         }
-        if (response) await writeLine(JSON.stringify(response));
+        if (response) await writeStdoutLine(JSON.stringify(response));
       }
     }
   } catch {
@@ -313,7 +495,7 @@ export async function runStdioServer(
  * concerns, so callers must state explicitly which namespace a contract declares.
  */
 export function mcpPresentedToolName(
-  canonicalName: CanonicalToolName,
+  canonicalName: CanonicalToolName | typeof HERDR_LINK_GATEWAY,
   serverName: string,
 ): string {
   return `mcp__${serverName}__${canonicalName}`;
@@ -327,14 +509,22 @@ function contractWithAppendix(appendix: string): string {
 /**
  * Contract text for prefix-style MCP hosts (e.g. Codex): tools are exposed as
  * independent `mcp__<namespace>__<canonical>` functions. `namespace` is the
- * host tool namespace and must be explicit.
+ * host tool namespace and must be explicit. Presentation is lazy: only the
+ * gateway is listed until the model activates it (blueprint v2).
  */
 export function buildMcpPrefixedCommunicationContract(namespace: string): string {
   const [peers, send, close] = HERDR_LINK_TOOLS.map((name) =>
     mcpPresentedToolName(name, namespace),
   );
+  const gateway = mcpPresentedToolName(HERDR_LINK_GATEWAY, namespace);
   return contractWithAppendix(
-    `In this runtime these tools are presented under MCP-prefixed names:\n- herdr_link_peers -> ${peers}\n- herdr_link_send -> ${send}\n- herdr_link_close -> ${close}`,
+    `In this runtime Herdr Link starts dormant: only the ${gateway} gateway tool is listed until it is activated.\n` +
+      `- Call ${gateway} once with no arguments ({}); the host then receives notifications/tools/list_changed and the cross-agent tools become available.\n` +
+      `- If the host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{...}}, {"action":"close","arguments":{...}}.\n` +
+      `The tools are presented under MCP-prefixed names (the canonical name is always the suffix):\n` +
+      `- herdr_link_peers -> ${peers}\n` +
+      `- herdr_link_send -> ${send}\n` +
+      `- herdr_link_close -> ${close}`,
   );
 }
 
@@ -342,14 +532,22 @@ export function buildMcpPrefixedCommunicationContract(namespace: string): string
  * Contract text for wrapper-style MCP hosts (e.g. AGY's call_mcp_tool): the
  * model invokes one native wrapper carrying ServerName/ToolName/Arguments
  * instead of per-tool functions (PROTOCOL.md §4.4 wrapper form). Both values
- * must be explicit.
+ * must be explicit. Presentation is lazy (blueprint v2): activate the gateway
+ * first, then address the canonical tools through the same wrapper.
  */
 export function buildMcpWrapperCommunicationContract(
   wrapperName: string,
   serverName: string,
 ): string {
   return contractWithAppendix(
-    `In this runtime Herdr Link MCP tools are invoked through ${wrapperName}.\n\nUse:\n- ServerName: "${serverName}"\n- ToolName: "herdr_link_peers", "herdr_link_send", or "herdr_link_close"\n- Arguments: the canonical input object for that Herdr Link tool`,
+    `In this runtime Herdr Link starts dormant: only the Tier 0 gateway (${HERDR_LINK_GATEWAY}) is listed until it is activated.\n` +
+      `- Invoke the gateway once with empty Arguments {} (ToolName "${HERDR_LINK_GATEWAY}"); the host then receives notifications/tools/list_changed and the cross-agent tools become available.\n` +
+      `- If the host did not refresh its tool list, keep dispatching through the gateway with ToolName "${HERDR_LINK_GATEWAY}" and an Arguments object carrying {"action":"peers"|"send"|"close", ...}.\n\n` +
+      `After activation, Herdr Link MCP tools are invoked through ${wrapperName}.\n\n` +
+      `Use:\n` +
+      `- ServerName: "${serverName}"\n` +
+      `- ToolName: "herdr_link_peers", "herdr_link_send", or "herdr_link_close"\n` +
+      `- Arguments: the canonical input object for that Herdr Link tool`,
   );
 }
 

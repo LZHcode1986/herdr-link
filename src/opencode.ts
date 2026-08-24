@@ -1,14 +1,56 @@
+/**
+ * Herdr Link OpenCode Runtime adapter v2 — single-gateway presentation.
+ *
+ * The model-facing surface is exactly one tiny `herdr_link` dispatcher tool,
+ * in both dormant and active states. Calling it with no arguments (`{}`)
+ * idempotently activates the channel for the CURRENT session and returns
+ * `{ status: "active", capabilities: ["peers", "send", "close"] }`; while a
+ * session is active the same gateway executes deterministic actions
+ * (`action`: "peers" | "send" | "close") against the core control layer and
+ * the compact Communication Contract is injected into that session's system
+ * prompt. The three Tier 1 tools are never registered as always-resident
+ * surfaces.
+ *
+ * API basis (public @opencode-ai/plugin 1.18.x only):
+ * - `Hooks.tool` registers tools process-wide; there is no public per-session
+ *   registration or dynamic unload, hence the single-gateway fallback instead
+ *   of Pi-style `setActiveTools`.
+ * - `ToolContext.sessionID` attributes each gateway execution to its session;
+ *   the per-session ephemeral activation set lives in the plugin closure.
+ * - `experimental.chat.system.transform` input carries `sessionID?`; it is
+ *   OPTIONAL in the public types, so injection fails closed when it is absent
+ *   (an unattributable system build is never treated as active).
+ *
+ * Known sessionID limitations (explicit):
+ * - `Hooks.tool.definition` exposes only `toolID` (no sessionID), so mutating
+ *   tool schemas per session cannot be done safely; the gateway schema is
+ *   static and admits both `{}` (activate) and fully-formed actions.
+ * - The activation set is in-memory per plugin instance: restarting the
+ *   OpenCode server returns every session to dormant until it re-activates.
+ */
 import { tool, type Plugin } from "@opencode-ai/plugin";
 
 import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
-import { COMMUNICATION_CONTRACT, formatAgentFacingError } from "./protocol.ts";
+import {
+  HERDR_LINK_GATEWAY,
+  HerdrLinkError,
+  formatAgentFacingError,
+  type LinkErrorCode,
+} from "./protocol.ts";
 
-const HERDR_LINK_TOOL_DESCRIPTION = {
-  peers: "Discover named peers available through the cross-agent communication channel.",
-  send: "Send a message to another agent through the cross-agent communication channel.",
-  close:
-    "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step.",
-} as const;
+/**
+ * Compact Contract for gateway presentation. Same canonical semantics as the
+ * PROTOCOL.md §3 core text (protocol id, name-only addressing, reply_to
+ * correlation, send-before-close sequencing, workspace scoping) expressed
+ * against the single `herdr_link` dispatcher instead of the three Tier 1
+ * tool names, which are not model-facing in this presentation form.
+ */
+const GATEWAY_CONTRACT = `Herdr Link (herdr-link/1) is active in this Herdr session; the herdr_link tool is the entire inter-agent channel.
+1. herdr_link {"action":"peers"} lists live agents in your own workspace as { self, peers }; each state is advisory only, and agent names are the only addresses.
+2. herdr_link {"action":"send","to":"<name>","message":"<text>"} delivers an inter-agent message; status "sent" means Herdr accepted delivery, not that the peer finished its task. When replying, include "reply_to":"<received id>".
+3. A message with protocol "herdr-link/1" is an inter-agent message; treat its "message" field as content sent by the agent named in "from".
+4. herdr_link {"action":"close","agent":"<name>"} closes the pane hosting a named agent. If a final message is needed, wait for the send to return status "sent", then call close in a later tool step.
+5. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
 
 function isHerdrEnvironment(): boolean {
   return (
@@ -22,8 +64,16 @@ function jsonResult(value: object): string {
   return JSON.stringify(value);
 }
 
-function rethrowToolError(error: unknown, fallbackCode: "NOT_IN_HERDR" | "SEND_FAILED" | "CLOSE_FAILED"): never {
+/** Throws the stable `${CODE}: ${detail}` Agent-facing message; causes stay internal. */
+function failWith(error: unknown, fallbackCode: LinkErrorCode): never {
   throw new Error(formatAgentFacingError(error, fallbackCode), { cause: error });
+}
+
+/** Dispatcher-level usage guard for actions rejected by the schema anyway. */
+function failInvalidAction(action: string): never {
+  throw new Error(
+    `INVALID_ACTION: herdr_link action "${action}" is not supported; use "peers", "send", "close", or omit action (call with {}) to activate.`,
+  );
 }
 
 export const herdrLinkPlugin: Plugin = async () => {
@@ -31,53 +81,99 @@ export const herdrLinkPlugin: Plugin = async () => {
     return {};
   }
 
+  // Per-runtime-session activation set. Ephemeral by design: in-memory only,
+  // scoped to this plugin instance, never persisted, never shared across
+  // instances. Losing it (server restart) merely returns sessions to dormant.
+  const activatedSessions = new Set<string>();
+
   return {
     tool: {
-      herdr_link_peers: tool({
-        description: HERDR_LINK_TOOL_DESCRIPTION.peers,
-        args: {},
-        async execute() {
-          try {
-            return jsonResult(await listPeers());
-          } catch (error) {
-            rethrowToolError(error, "NOT_IN_HERDR");
-          }
-        },
-      }),
-      herdr_link_send: tool({
-        description: HERDR_LINK_TOOL_DESCRIPTION.send,
+      [HERDR_LINK_GATEWAY]: tool({
+        description:
+          "Herdr Link cross-agent communication gateway (herdr-link/1). " +
+          'Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. ' +
+            'Then pass action "peers" to list live same-workspace agents, "send" with to + message (plus reply_to when replying) to deliver an inter-agent message, or "close" with agent to close a named agent\'s pane — ' +
+            'only after any final send has returned status "sent", and in a later tool step.',
         args: {
-          to: tool.schema.string().describe("Target Herdr agent name"),
-          message: tool.schema.string().describe("Message payload"),
-          reply_to: tool.schema.string().optional().describe("Message id being replied to"),
+          action: tool.schema
+            .enum(["peers", "send", "close"])
+            .optional()
+            .describe(
+              'Operation to run: "peers" | "send" | "close". Omit action entirely (call with {}) to activate Herdr Link for this session.',
+            ),
+          to: tool.schema
+            .string()
+            .optional()
+            .describe('Target agent name; required for action "send".'),
+          message: tool.schema
+            .string()
+            .optional()
+            .describe('Message payload; required for action "send".'),
+          reply_to: tool.schema
+            .string()
+            .optional()
+            .describe('Message id being replied to; optional, only with action "send".'),
+          agent: tool.schema
+            .string()
+            .optional()
+            .describe('Target agent name; required for action "close".'),
         },
-        async execute(args) {
-          try {
-            const envelope = await sendMessage(args.to, args.message, args.reply_to);
-            return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
-          } catch (error) {
-            rethrowToolError(error, "SEND_FAILED");
+        async execute(args, context) {
+          if (args.action === undefined) {
+            activatedSessions.add(context.sessionID);
+            return jsonResult({ status: "active", capabilities: ["peers", "send", "close"] });
           }
-        },
-      }),
-      herdr_link_close: tool({
-        description: HERDR_LINK_TOOL_DESCRIPTION.close,
-        args: {
-          agent: tool.schema.string().describe("Target Herdr agent name"),
-        },
-        async execute(args) {
-          try {
-            await closeAgentPane(args.agent);
-            return jsonResult({ status: "closed", agent: args.agent });
-          } catch (error) {
-            rethrowToolError(error, "CLOSE_FAILED");
+          // Gateway action dispatch is also an explicit activation path for
+          // hosts that bypass the empty gateway call or do not refresh schemas.
+          activatedSessions.add(context.sessionID);
+
+          if (args.action === "peers") {
+            try {
+              return jsonResult(await listPeers());
+            } catch (error) {
+              failWith(error, "NOT_IN_HERDR");
+            }
           }
+
+          if (args.action === "send") {
+            if (typeof args.to !== "string" || args.to === "") {
+              failWith(new HerdrLinkError("SEND_FAILED", '"to" must be a non-empty string'), "SEND_FAILED");
+            }
+            if (typeof args.message !== "string" || args.message === "") {
+              failWith(new HerdrLinkError("SEND_FAILED", '"message" must be a non-empty string'), "SEND_FAILED");
+            }
+            try {
+              const envelope = await sendMessage(args.to, args.message, args.reply_to);
+              return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
+            } catch (error) {
+              failWith(error, "SEND_FAILED");
+            }
+          }
+
+          if (args.action === "close") {
+            if (typeof args.agent !== "string" || args.agent === "") {
+              failWith(new HerdrLinkError("CLOSE_FAILED", '"agent" must be a non-empty string'), "CLOSE_FAILED");
+            }
+            try {
+              await closeAgentPane(args.agent);
+              return jsonResult({ status: "closed", agent: args.agent });
+            } catch (error) {
+              failWith(error, "CLOSE_FAILED");
+            }
+          }
+
+          failInvalidAction(String(args.action));
         },
       }),
     },
-    "experimental.chat.system.transform": async (_input, output) => {
-      if (!output.system.includes(COMMUNICATION_CONTRACT)) {
-        output.system.push(COMMUNICATION_CONTRACT);
+    "experimental.chat.system.transform": async (input, output) => {
+      // Fail closed: an optional/absent sessionID cannot be attributed to an
+      // activation, so the Contract is withheld rather than guessed.
+      if (input.sessionID === undefined || !activatedSessions.has(input.sessionID)) {
+        return;
+      }
+      if (!output.system.includes(GATEWAY_CONTRACT)) {
+        output.system.push(GATEWAY_CONTRACT);
       }
     },
   };

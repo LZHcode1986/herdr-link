@@ -12,7 +12,78 @@ export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 /** Message id rule from PROTOCOL.md §2.3: `hl_<timestamp>_<random>`. */
 export const MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 
-/** The cross-agent message envelope (PROTOCOL.md §2). */
+/* ------------------------------------------------------------------ *
+ * Naming tiers (blueprint v2)
+ *
+ * Tier 0 is the Herdr Link gateway itself — the host registration
+ * namespace every runtime presents its tools against (underscore form;
+ * docs/mcp-wiring.md). Tier 1 are the canonical tool names exposed
+ * through the gateway. Both are stable machine-usable constants;
+ * runtime-specific presented names must map deterministically onto them
+ * (PROTOCOL.md §4.4).
+ * ------------------------------------------------------------------ */
+
+/** Tier 0 — gateway name in its underscore host-namespace form. */
+export const HERDR_LINK_GATEWAY = "herdr_link" as const;
+
+/** Tier 1 — canonical tool names exposed through the gateway. */
+export const TOOL_PEERS = "herdr_link_peers" as const;
+export const TOOL_SEND = "herdr_link_send" as const;
+export const TOOL_CLOSE = "herdr_link_close" as const;
+export const HERDR_LINK_TOOLS = [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE] as const;
+
+/* ------------------------------------------------------------------ *
+ * Agent state (blueprint v2)
+ * ------------------------------------------------------------------ */
+
+/** Live activity states; any unrecognized Herdr status maps to "unknown". */
+export const AGENT_STATES = ["idle", "working", "blocked", "done", "unknown"] as const;
+
+export type AgentState = (typeof AGENT_STATES)[number];
+
+/** Maps a raw Herdr status value onto the closed AgentState vocabulary. */
+export function toAgentState(value: unknown): AgentState {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if ((AGENT_STATES as readonly string[]).includes(normalized)) {
+      return normalized as AgentState;
+    }
+  }
+  return "unknown";
+}
+
+/** A named agent together with its live activity state. Never carries topology ids. */
+export interface PeerInfo {
+  name: string;
+  state: AgentState;
+}
+
+/**
+ * Instant peer directory (blueprint v2): same-workspace live agents only,
+ * self excluded. Generated fresh on every call; never persisted or cached.
+ */
+export interface PeerDirectory {
+  self: PeerInfo;
+  peers: PeerInfo[];
+}
+
+/**
+ * Live identity of one agent, freshly resolved from Herdr on every call.
+ * Ambient environment values (e.g. HERDR_WORKSPACE_ID) are never a
+ * substitute for these fields.
+ */
+export interface AgentContext {
+  /** Valid Herdr agent name. */
+  name: string;
+  /** Authoritative workspace id from the live record; "" when unreported (comparisons fail closed). */
+  workspace_id: string;
+  /** Pane currently hosting the agent. */
+  pane_id: string;
+  /** Live activity state mapped onto AgentState. */
+  agent_status: AgentState;
+}
+
+/** The cross-agent message envelope (PROTOCOL.md §2). Minimal fields only. */
 export interface HerdrLinkEnvelope {
   protocol: typeof PROTOCOL_ID;
   id: string;
@@ -20,12 +91,6 @@ export interface HerdrLinkEnvelope {
   to: string;
   reply_to?: string;
   message: string;
-}
-
-/** Instant peer directory (PROTOCOL.md §4.1). Never persisted or cached. */
-export interface PeerDirectory {
-  self: string;
-  peers: string[];
 }
 
 /** V1 error codes (PROTOCOL.md §7). All are local tool failures, never an envelope. */
@@ -128,7 +193,7 @@ export function buildEnvelope(input: BuildEnvelopeInput): HerdrLinkEnvelope {
 }
 
 /**
- * Type guard for receiving side (PROTOCOL.md §3 rule 3): an incoming prompt
+ * Type guard for receiving side (PROTOCOL.md §3 rule 3): an incoming payload
  * is a Herdr Link message iff it carries `protocol: "herdr-link/1"` and a
  * string `message` body from a named `from` agent.
  */
@@ -149,19 +214,71 @@ export function isHerdrLinkEnvelope(value: unknown): value is HerdrLinkEnvelope 
   );
 }
 
-/** Agent Communication Contract injected verbatim into the model (PROTOCOL.md §3). */
-export const COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents
-running in the same Herdr session.
+/* ------------------------------------------------------------------ *
+ * Inbound delivery wrapper (blueprint v2)
+ *
+ * `herdr agent prompt` carries a self-describing wrapper around the
+ * envelope so a dormant receiver (adapter loaded, model not mid-exchange)
+ * can recognize the delivery and activate a reply addressed by reply_to.
+ * The wrapper is transport dressing ONLY: the envelope keeps exactly the
+ * minimal herdr-link/1 fields and is embedded verbatim as the final line.
+ * ------------------------------------------------------------------ */
 
-1. Use herdr_link_peers to discover agent addresses.
+/** Marks the start of an inbound delivery wrapper. */
+export const INBOUND_WRAPPER_MARKER = `[${PROTOCOL_ID}]`;
+
+/** Builds the self-describing inbound wrapper delivered via `agent prompt`. */
+export function buildInboundWrapper(envelope: HerdrLinkEnvelope): string {
+  const lines: string[] = [
+    `${INBOUND_WRAPPER_MARKER} inter-agent message delivered through the ${HERDR_LINK_GATEWAY} gateway.`,
+    `From: ${envelope.from}`,
+    `Message id: ${envelope.id}`,
+  ];
+  if (envelope.reply_to !== undefined) {
+    lines.push(`Reply to: ${envelope.reply_to}`);
+  }
+  lines.push(
+    "",
+    "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
+    'Treat the envelope\'s "message" field as content sent by the agent named in "from".',
+    `If a reply is needed, first call the ${HERDR_LINK_GATEWAY} gateway with {} when this runtime starts dormant, then call ${TOOL_SEND} with to="${envelope.from}" and reply_to="${envelope.id}".`,
+    "",
+    JSON.stringify(envelope),
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Receiver-side counterpart: extracts the envelope from a delivery text by
+ * scanning bottom-up for a line that parses as a valid herdr-link/1
+ * envelope. Returns undefined for non-delivery input.
+ */
+export function extractInboundEnvelope(text: string): HerdrLinkEnvelope | undefined {
+  const lines = text.split("\n");
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]!.trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const candidate: unknown = JSON.parse(line);
+      if (isHerdrLinkEnvelope(candidate)) return candidate;
+    } catch {
+      // Not JSON on this line; keep scanning upwards.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Active Agent Communication Contract injected verbatim into the model.
+ * Compact form: same-workspace addressing, send/reply/close semantics only.
+ */
+export const COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
+
+1. Use herdr_link_peers to discover agent addresses; it lists only live agents in your own workspace, each with an advisory activity state.
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
 5. When replying, send to the received "from" agent and set reply_to to the received "id".
 6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id or UI focus as an inter-agent address.
-8. Do not use Herdr CLI, terminal input, pane reads, waits, or Skills for normal inter-agent messaging.
-9. Herdr Link communicates with existing named agents and executes explicit close requests; agent creation, configuration, scheduling, identity ownership, and lifecycle policy remain outside it.`;
-
-/** Canonical tool names (PROTOCOL.md §4). */
-export const HERDR_LINK_TOOLS = ["herdr_link_peers", "herdr_link_send", "herdr_link_close"] as const;
+7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;

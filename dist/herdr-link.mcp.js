@@ -8,6 +8,21 @@ import { execFile } from "node:child_process";
 var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 var MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
+var HERDR_LINK_GATEWAY = "herdr_link";
+var TOOL_PEERS = "herdr_link_peers";
+var TOOL_SEND = "herdr_link_send";
+var TOOL_CLOSE = "herdr_link_close";
+var HERDR_LINK_TOOLS = [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE];
+var AGENT_STATES = ["idle", "working", "blocked", "done", "unknown"];
+function toAgentState(value) {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (AGENT_STATES.includes(normalized)) {
+      return normalized;
+    }
+  }
+  return "unknown";
+}
 var HerdrLinkError = class extends Error {
   code;
   constructor(code, detail) {
@@ -72,19 +87,36 @@ function buildEnvelope(input) {
   }
   return envelope;
 }
-var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents
-running in the same Herdr session.
+var INBOUND_WRAPPER_MARKER = `[${PROTOCOL_ID}]`;
+function buildInboundWrapper(envelope) {
+  const lines = [
+    `${INBOUND_WRAPPER_MARKER} inter-agent message delivered through the ${HERDR_LINK_GATEWAY} gateway.`,
+    `From: ${envelope.from}`,
+    `Message id: ${envelope.id}`
+  ];
+  if (envelope.reply_to !== void 0) {
+    lines.push(`Reply to: ${envelope.reply_to}`);
+  }
+  lines.push(
+    "",
+    "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
+    `Treat the envelope's "message" field as content sent by the agent named in "from".`,
+    `If a reply is needed, first call the ${HERDR_LINK_GATEWAY} gateway with {} when this runtime starts dormant, then call ${TOOL_SEND} with to="${envelope.from}" and reply_to="${envelope.id}".`,
+    "",
+    JSON.stringify(envelope)
+  );
+  return lines.join("\n");
+}
+var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
 
-1. Use herdr_link_peers to discover agent addresses.
+1. Use herdr_link_peers to discover agent addresses; it lists only live agents in your own workspace, each with an advisory activity state.
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
 5. When replying, send to the received "from" agent and set reply_to to the received "id".
 6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id or UI focus as an inter-agent address.
-8. Do not use Herdr CLI, terminal input, pane reads, waits, or Skills for normal inter-agent messaging.
-9. Herdr Link communicates with existing named agents and executes explicit close requests; agent creation, configuration, scheduling, identity ownership, and lifecycle policy remain outside it.`;
-var HERDR_LINK_TOOLS = ["herdr_link_peers", "herdr_link_send", "herdr_link_close"];
+7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
 
 // src/herdr.ts
 function attachCliOutput(error, stdout, stderr) {
@@ -128,15 +160,12 @@ function errorDetail(error) {
 function operationError(error, code) {
   return new HerdrLinkError(code, errorDetail(error));
 }
-function isClassifiedHerdrError(error) {
-  return error instanceof HerdrLinkError && error.code !== "NOT_IN_HERDR";
-}
 async function runFor(args, failureCode) {
   assertHerdrEnvironment();
   try {
     return await runHerdr(args);
   } catch (error) {
-    if (isClassifiedHerdrError(error)) throw error;
+    if (error instanceof HerdrLinkError) throw error;
     throw operationError(error, failureCode);
   }
 }
@@ -191,24 +220,36 @@ function agentRecord(value) {
   if (typeof root.name === "string" || typeof root.pane_id === "string") return root;
   return void 0;
 }
-function agentName(value) {
-  if (typeof value === "string") return value || void 0;
-  const agent = agentRecord(value);
-  const name = agent?.name;
-  return typeof name === "string" && name.length > 0 ? name : void 0;
-}
 function agentList(value) {
   const root = asRecord(value);
   const result = asRecord(root?.result);
   const agents = result?.agents ?? root?.agents;
   return Array.isArray(agents) ? agents : [];
 }
-function paneId(value) {
-  const agent = agentRecord(value);
-  const id = agent?.pane_id;
-  return typeof id === "string" && id.length > 0 ? id : void 0;
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
 }
-async function getSelf() {
+function validAgentNameValue(value) {
+  const name = nonEmptyString(value);
+  return name !== void 0 && isValidAgentName(name) ? name : void 0;
+}
+function readLiveRecord(value) {
+  const agent = agentRecord(value);
+  return {
+    name: validAgentNameValue(agent?.name),
+    workspace_id: nonEmptyString(agent?.workspace_id),
+    pane_id: nonEmptyString(agent?.pane_id),
+    live: typeof agent?.live === "boolean" ? agent.live : void 0
+  };
+}
+function readStatus(value) {
+  const agent = agentRecord(value);
+  return toAgentState(agent?.agent_status ?? agent?.status);
+}
+function isExcludedEntry(value) {
+  return agentRecord(value)?.live === false;
+}
+async function getSelfContext() {
   assertHerdrEnvironment();
   const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
@@ -223,54 +264,115 @@ async function getSelf() {
     }
     throw error;
   }
-  const name = agentName(response);
-  if (!name || !isValidAgentName(name)) {
+  const record = readLiveRecord(response);
+  if (record.live === false || !record.name) {
     throw new HerdrLinkError("SELF_UNNAMED", "current Herdr agent has no valid name");
   }
-  return name;
+  return {
+    name: record.name,
+    workspace_id: record.workspace_id ?? "",
+    pane_id: record.pane_id ?? pane,
+    agent_status: readStatus(response)
+  };
+}
+async function getAgentContext(name) {
+  assertHerdrEnvironment();
+  if (!isValidAgentName(name)) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent name "${name}" is invalid`);
+  }
+  const response = await runFor(["agent", "get", name], "PEER_NOT_FOUND");
+  const record = readLiveRecord(response);
+  if (record.live === false || !record.name || record.name !== name) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent "${name}" has no valid live record`);
+  }
+  return {
+    name: record.name,
+    workspace_id: record.workspace_id ?? "",
+    pane_id: record.pane_id ?? "",
+    agent_status: readStatus(response)
+  };
+}
+function assertSameWorkspace(self, target) {
+  if (self.workspace_id === "" || target.workspace_id === "" || self.workspace_id !== target.workspace_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
 }
 async function listPeers() {
-  const self = await getSelf();
+  const self = await getSelfContext();
   const response = await runFor(["agent", "list"], "NOT_IN_HERDR");
-  const peers = agentList(response).map(agentName).filter((name) => name !== void 0 && isValidAgentName(name) && name !== self);
-  return { self, peers };
+  const peers = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const entry of agentList(response)) {
+    const record = readLiveRecord(entry);
+    if (!record.name || seen.has(record.name)) continue;
+    seen.add(record.name);
+    if (record.name === self.name) continue;
+    if (self.workspace_id === "" || record.workspace_id !== self.workspace_id) continue;
+    if (isExcludedEntry(entry)) continue;
+    peers.push({ name: record.name, state: readStatus(entry) });
+  }
+  return { self: { name: self.name, state: self.agent_status }, peers };
 }
 async function sendMessage(to, message, reply_to) {
-  const from = await getSelf();
-  const envelope = buildEnvelope({ from, to, message, reply_to });
-  await runFor(["agent", "prompt", to, JSON.stringify(envelope)], "SEND_FAILED");
-  return { status: "sent", id: envelope.id, to };
+  const self = await getSelfContext();
+  const target = await getAgentContext(to);
+  assertSameWorkspace(self, target);
+  const envelope = buildEnvelope({
+    from: self.name,
+    to: target.name,
+    message,
+    reply_to
+  });
+  await runFor(["agent", "prompt", target.name, buildInboundWrapper(envelope)], "SEND_FAILED");
+  return { status: "sent", id: envelope.id, to: target.name };
 }
-async function closeAgentPane(agentName2) {
+async function getSelfWorkspaceId() {
   assertHerdrEnvironment();
-  if (!isValidAgentName(agentName2)) {
-    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent name "${agentName2}" is invalid`);
-  }
-  const response = await runFor(["agent", "get", agentName2], "PEER_NOT_FOUND");
-  const pane = paneId(response);
+  const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
-    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent "${agentName2}" has no current pane`);
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
   }
-  await runFor(["pane", "close", pane], "CLOSE_FAILED");
-  return { status: "closed", agent: agentName2 };
+  const response = await runFor(["agent", "get", pane], "NOT_IN_HERDR");
+  const record = readLiveRecord(response);
+  if (record.live === false || !record.workspace_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
+  return record.workspace_id;
+}
+async function closeAgentPane(agentName) {
+  assertHerdrEnvironment();
+  if (!isValidAgentName(agentName)) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent name "${agentName}" is invalid`);
+  }
+  const selfWorkspaceId = await getSelfWorkspaceId();
+  const target = await getAgentContext(agentName);
+  if (target.workspace_id === "" || target.workspace_id !== selfWorkspaceId) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
+  if (!target.pane_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent "${agentName}" has no current pane`);
+  }
+  await runFor(["pane", "close", target.pane_id], "CLOSE_FAILED");
+  return { status: "closed", agent: target.name };
 }
 
 // src/mcp.ts
 var MCP_SERVER_NAME = "herdr-link";
 var MCP_SERVER_VERSION = "0.1.0";
 var MCP_PROTOCOL_VERSION = "2025-06-18";
+var TOOLS_LIST_CHANGED = "notifications/tools/list_changed";
 var PARSE_ERROR = -32700;
 var INVALID_REQUEST = -32600;
 var METHOD_NOT_FOUND = -32601;
 var INVALID_PARAMS = -32602;
 var TOOL_DESCRIPTIONS = {
-  herdr_link_peers: "Discover named peers available through the cross-agent communication channel.",
-  herdr_link_send: "Send a message to another agent through the cross-agent communication channel.",
-  herdr_link_close: "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step."
+  [TOOL_PEERS]: "Discover named peers available through the cross-agent communication channel.",
+  [TOOL_SEND]: "Send a message to another agent through the cross-agent communication channel.",
+  [TOOL_CLOSE]: "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step."
 };
 var TOOL_INPUT_SCHEMAS = {
-  herdr_link_peers: { type: "object", properties: {} },
-  herdr_link_send: {
+  [TOOL_PEERS]: { type: "object", properties: {} },
+  [TOOL_SEND]: {
     type: "object",
     properties: {
       to: { type: "string", description: "Target Herdr agent name" },
@@ -279,7 +381,7 @@ var TOOL_INPUT_SCHEMAS = {
     },
     required: ["to", "message"]
   },
-  herdr_link_close: {
+  [TOOL_CLOSE]: {
     type: "object",
     properties: {
       agent: { type: "string", description: "Target Herdr agent name" }
@@ -288,9 +390,27 @@ var TOOL_INPUT_SCHEMAS = {
   }
 };
 var FALLBACK_ERROR_CODE = {
-  herdr_link_peers: "NOT_IN_HERDR",
-  herdr_link_send: "SEND_FAILED",
-  herdr_link_close: "CLOSE_FAILED"
+  [TOOL_PEERS]: "NOT_IN_HERDR",
+  [TOOL_SEND]: "SEND_FAILED",
+  [TOOL_CLOSE]: "CLOSE_FAILED"
+};
+var GATEWAY_TOOL = {
+  name: HERDR_LINK_GATEWAY,
+  description: 'Herdr Link gateway. Cross-agent messaging starts dormant: call this tool once with no arguments ({}) to activate it for this session \u2014 the host is notified via notifications/tools/list_changed and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{"to":...,"message":...,"reply_to":...}}, or {"action":"close","arguments":{"agent":...}}.',
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: ["activate", "peers", "send", "close"],
+        description: 'Omit or use "activate" to turn the session on; other values dispatch the corresponding peers, send, or close capability.'
+      },
+      arguments: {
+        type: "object",
+        description: "Canonical input object of the dispatched tool (ignored for activation)."
+      }
+    }
+  }
 };
 function isHerdrEnvironment() {
   return process.env.HERDR_ENV === "1" && Boolean(process.env.HERDR_BIN_PATH) && Boolean(process.env.HERDR_PANE_ID);
@@ -329,53 +449,122 @@ function optionalStringArg(args, key, code) {
   }
   return value;
 }
+function createSerializedLineWriter(stream) {
+  let tail = Promise.resolve();
+  return (line) => {
+    const queued = new Promise((done) => {
+      tail = tail.then(() => {
+        if (stream.write(`${line}
+`)) {
+          done();
+          return;
+        }
+        const flushed = () => {
+          stream.off("drain", flushed);
+          stream.off("error", flushed);
+          done();
+        };
+        stream.on("drain", flushed);
+        stream.on("error", flushed);
+      });
+    });
+    return queued;
+  };
+}
+var writeStdoutLine = createSerializedLineWriter(process.stdout);
+function stdoutNotificationSink(notification) {
+  void writeStdoutLine(JSON.stringify(notification));
+}
 function createRequestHandler(deps = {}) {
   const environmentOk = deps.environmentOk ?? isHerdrEnvironment;
   const runPeers = deps.listPeers ?? listPeers;
   const runSend = deps.sendMessage ?? sendMessage;
   const runClose = deps.closeAgentPane ?? closeAgentPane;
+  const notify = deps.notify ?? stdoutNotificationSink;
+  let activated = false;
+  function activateSession() {
+    if (activated) return;
+    activated = true;
+    notify({ jsonrpc: "2.0", method: TOOLS_LIST_CHANGED });
+  }
   function respond(id, result) {
     return { jsonrpc: "2.0", id, result };
   }
   function fail(id, code, message) {
     return { jsonrpc: "2.0", id, error: { code, message } };
   }
-  async function callTool(id, params) {
-    const name = params.name;
-    if (typeof name !== "string" || !HERDR_LINK_TOOLS.includes(name)) {
-      return fail(id, INVALID_PARAMS, `Unknown tool: ${String(name ?? "")}`);
-    }
-    const canonicalName = name;
-    const rawArguments = params.arguments;
-    const args = isRecord(rawArguments) ? rawArguments : {};
-    try {
-      let value;
-      switch (canonicalName) {
-        case "herdr_link_peers":
-          value = await runPeers();
-          break;
-        case "herdr_link_send": {
-          const to = requireStringArg(args, "to", "PEER_NOT_FOUND");
-          const message = requireStringArg(args, "message", "SEND_FAILED");
-          const reply_to = optionalStringArg(args, "reply_to", "SEND_FAILED");
-          const sent = await runSend(to, message, reply_to);
-          value = { status: sent.status, id: sent.id, to: sent.to };
-          break;
-        }
-        case "herdr_link_close": {
-          const agent = requireStringArg(args, "agent", "PEER_NOT_FOUND");
-          value = await runClose(agent);
-          break;
-        }
+  function callSuccess(id, value) {
+    return respond(id, { content: [{ type: "text", text: JSON.stringify(value) }] });
+  }
+  function callFailure(id, error, fallbackCode) {
+    const linkError = error instanceof HerdrLinkError ? error : new HerdrLinkError(fallbackCode, describeError2(error));
+    return respond(id, {
+      content: [{ type: "text", text: formatAgentFacingError(linkError, linkError.code) }],
+      isError: true
+    });
+  }
+  async function executeCanonical(canonicalName, args) {
+    switch (canonicalName) {
+      case TOOL_PEERS:
+        return await runPeers();
+      case TOOL_SEND: {
+        const to = requireStringArg(args, "to", "PEER_NOT_FOUND");
+        const message = requireStringArg(args, "message", "SEND_FAILED");
+        const reply_to = optionalStringArg(args, "reply_to", "SEND_FAILED");
+        const sent = await runSend(to, message, reply_to);
+        return { status: sent.status, id: sent.id, to: sent.to };
       }
-      return respond(id, { content: [{ type: "text", text: JSON.stringify(value) }] });
+      case TOOL_CLOSE: {
+        const agent = requireStringArg(args, "agent", "PEER_NOT_FOUND");
+        return await runClose(agent);
+      }
+    }
+  }
+  async function callCanonicalTool(id, canonicalName, args) {
+    try {
+      return callSuccess(id, await executeCanonical(canonicalName, args));
     } catch (error) {
-      const linkError = error instanceof HerdrLinkError ? error : new HerdrLinkError(FALLBACK_ERROR_CODE[canonicalName], describeError2(error));
-      return respond(id, {
-        content: [{ type: "text", text: formatAgentFacingError(linkError, linkError.code) }],
-        isError: true
+      return callFailure(id, error, FALLBACK_ERROR_CODE[canonicalName]);
+    }
+  }
+  async function callGateway(id, args) {
+    if (!environmentOk()) {
+      return callFailure(id, new HerdrLinkError("NOT_IN_HERDR"), "NOT_IN_HERDR");
+    }
+    const action = args.action;
+    if (action === void 0 || action === "activate") {
+      activateSession();
+      return callSuccess(id, {
+        status: "active",
+        capabilities: ["peers", "send", "close"]
       });
     }
+    if (typeof action !== "string" || !["peers", "send", "close"].includes(action)) {
+      return fail(id, INVALID_PARAMS, `Unknown gateway action: ${String(action)}`);
+    }
+    const canonicalName = action === "peers" ? TOOL_PEERS : action === "send" ? TOOL_SEND : TOOL_CLOSE;
+    activateSession();
+    const dispatchArgs = isRecord(args.arguments) ? args.arguments : args;
+    return await callCanonicalTool(id, canonicalName, dispatchArgs);
+  }
+  async function callTool(id, params) {
+    const name = params.name;
+    if (typeof name !== "string") {
+      return fail(id, INVALID_PARAMS, `Unknown tool: ${String(name ?? "")}`);
+    }
+    const rawArguments = params.arguments;
+    const args = isRecord(rawArguments) ? rawArguments : {};
+    if (name === HERDR_LINK_GATEWAY) {
+      return await callGateway(id, args);
+    }
+    if (!HERDR_LINK_TOOLS.includes(name)) {
+      return fail(id, INVALID_PARAMS, `Unknown tool: ${name}`);
+    }
+    if (!environmentOk()) {
+      return callFailure(id, new HerdrLinkError("NOT_IN_HERDR"), "NOT_IN_HERDR");
+    }
+    activateSession();
+    return await callCanonicalTool(id, name, args);
   }
   return async (message) => {
     if (!isRecord(message)) {
@@ -396,14 +585,18 @@ function createRequestHandler(deps = {}) {
           // Echoing the client's version maximizes compatibility; clients that
           // do not support our default would disconnect on a mismatch anyway.
           protocolVersion: typeof requested === "string" ? requested : MCP_PROTOCOL_VERSION,
-          capabilities: { tools: {} },
+          capabilities: { tools: { listChanged: true } },
           serverInfo: { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION }
         });
       }
       case "ping":
         return respond(id, {});
-      case "tools/list":
-        return respond(id, { tools: environmentOk() ? toolDefinitions() : [] });
+      case "tools/list": {
+        if (!environmentOk()) return respond(id, { tools: [] });
+        return respond(id, {
+          tools: activated ? [GATEWAY_TOOL, ...toolDefinitions()] : [GATEWAY_TOOL]
+        });
+      }
       case "tools/call": {
         const params = message.params;
         if (!isRecord(params)) {
@@ -417,17 +610,7 @@ function createRequestHandler(deps = {}) {
   };
 }
 async function runStdioServer(handler) {
-  const stdout = process.stdout;
   let buffer = "";
-  const writeLine = (line) => new Promise((resolve) => {
-    if (stdout.write(`${line}
-`)) {
-      resolve();
-      return;
-    }
-    stdout.once("drain", () => resolve());
-    stdout.once("error", () => resolve());
-  });
   try {
     for await (const chunk of process.stdin) {
       buffer += chunk.toString("utf8");
@@ -443,7 +626,7 @@ async function runStdioServer(handler) {
         } catch {
           response = failParse();
         }
-        if (response) await writeLine(JSON.stringify(response));
+        if (response) await writeStdoutLine(JSON.stringify(response));
       }
     }
   } catch {
@@ -464,8 +647,12 @@ function buildMcpPrefixedCommunicationContract(namespace) {
   const [peers, send, close] = HERDR_LINK_TOOLS.map(
     (name) => mcpPresentedToolName(name, namespace)
   );
+  const gateway = mcpPresentedToolName(HERDR_LINK_GATEWAY, namespace);
   return contractWithAppendix(
-    `In this runtime these tools are presented under MCP-prefixed names:
+    `In this runtime Herdr Link starts dormant: only the ${gateway} gateway tool is listed until it is activated.
+- Call ${gateway} once with no arguments ({}); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
+- If the host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{...}}, {"action":"close","arguments":{...}}.
+The tools are presented under MCP-prefixed names (the canonical name is always the suffix):
 - herdr_link_peers -> ${peers}
 - herdr_link_send -> ${send}
 - herdr_link_close -> ${close}`
@@ -473,7 +660,11 @@ function buildMcpPrefixedCommunicationContract(namespace) {
 }
 function buildMcpWrapperCommunicationContract(wrapperName, serverName) {
   return contractWithAppendix(
-    `In this runtime Herdr Link MCP tools are invoked through ${wrapperName}.
+    `In this runtime Herdr Link starts dormant: only the Tier 0 gateway (${HERDR_LINK_GATEWAY}) is listed until it is activated.
+- Invoke the gateway once with empty Arguments {} (ToolName "${HERDR_LINK_GATEWAY}"); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
+- If the host did not refresh its tool list, keep dispatching through the gateway with ToolName "${HERDR_LINK_GATEWAY}" and an Arguments object carrying {"action":"peers"|"send"|"close", ...}.
+
+After activation, Herdr Link MCP tools are invoked through ${wrapperName}.
 
 Use:
 - ServerName: "${serverName}"
@@ -501,6 +692,7 @@ export {
   MCP_SERVER_VERSION,
   METHOD_NOT_FOUND,
   PARSE_ERROR,
+  TOOLS_LIST_CHANGED,
   buildMcpPrefixedCommunicationContract,
   buildMcpWrapperCommunicationContract,
   createRequestHandler,

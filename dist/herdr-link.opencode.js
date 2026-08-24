@@ -8,6 +8,18 @@ import { execFile } from "node:child_process";
 var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 var MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
+var HERDR_LINK_GATEWAY = "herdr_link";
+var TOOL_SEND = "herdr_link_send";
+var AGENT_STATES = ["idle", "working", "blocked", "done", "unknown"];
+function toAgentState(value) {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (AGENT_STATES.includes(normalized)) {
+      return normalized;
+    }
+  }
+  return "unknown";
+}
 var HerdrLinkError = class extends Error {
   code;
   constructor(code, detail) {
@@ -72,18 +84,26 @@ function buildEnvelope(input) {
   }
   return envelope;
 }
-var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents
-running in the same Herdr session.
-
-1. Use herdr_link_peers to discover agent addresses.
-2. Use herdr_link_send to send messages to another agent.
-3. A message with protocol "herdr-link/1" is an inter-agent message.
-4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id or UI focus as an inter-agent address.
-8. Do not use Herdr CLI, terminal input, pane reads, waits, or Skills for normal inter-agent messaging.
-9. Herdr Link communicates with existing named agents and executes explicit close requests; agent creation, configuration, scheduling, identity ownership, and lifecycle policy remain outside it.`;
+var INBOUND_WRAPPER_MARKER = `[${PROTOCOL_ID}]`;
+function buildInboundWrapper(envelope) {
+  const lines = [
+    `${INBOUND_WRAPPER_MARKER} inter-agent message delivered through the ${HERDR_LINK_GATEWAY} gateway.`,
+    `From: ${envelope.from}`,
+    `Message id: ${envelope.id}`
+  ];
+  if (envelope.reply_to !== void 0) {
+    lines.push(`Reply to: ${envelope.reply_to}`);
+  }
+  lines.push(
+    "",
+    "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
+    `Treat the envelope's "message" field as content sent by the agent named in "from".`,
+    `If a reply is needed, first call the ${HERDR_LINK_GATEWAY} gateway with {} when this runtime starts dormant, then call ${TOOL_SEND} with to="${envelope.from}" and reply_to="${envelope.id}".`,
+    "",
+    JSON.stringify(envelope)
+  );
+  return lines.join("\n");
+}
 
 // src/herdr.ts
 function attachCliOutput(error, stdout, stderr) {
@@ -127,15 +147,12 @@ function errorDetail(error) {
 function operationError(error, code) {
   return new HerdrLinkError(code, errorDetail(error));
 }
-function isClassifiedHerdrError(error) {
-  return error instanceof HerdrLinkError && error.code !== "NOT_IN_HERDR";
-}
 async function runFor(args, failureCode) {
   assertHerdrEnvironment();
   try {
     return await runHerdr(args);
   } catch (error) {
-    if (isClassifiedHerdrError(error)) throw error;
+    if (error instanceof HerdrLinkError) throw error;
     throw operationError(error, failureCode);
   }
 }
@@ -190,24 +207,36 @@ function agentRecord(value) {
   if (typeof root.name === "string" || typeof root.pane_id === "string") return root;
   return void 0;
 }
-function agentName(value) {
-  if (typeof value === "string") return value || void 0;
-  const agent = agentRecord(value);
-  const name = agent?.name;
-  return typeof name === "string" && name.length > 0 ? name : void 0;
-}
 function agentList(value) {
   const root = asRecord(value);
   const result = asRecord(root?.result);
   const agents = result?.agents ?? root?.agents;
   return Array.isArray(agents) ? agents : [];
 }
-function paneId(value) {
-  const agent = agentRecord(value);
-  const id = agent?.pane_id;
-  return typeof id === "string" && id.length > 0 ? id : void 0;
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
 }
-async function getSelf() {
+function validAgentNameValue(value) {
+  const name = nonEmptyString(value);
+  return name !== void 0 && isValidAgentName(name) ? name : void 0;
+}
+function readLiveRecord(value) {
+  const agent = agentRecord(value);
+  return {
+    name: validAgentNameValue(agent?.name),
+    workspace_id: nonEmptyString(agent?.workspace_id),
+    pane_id: nonEmptyString(agent?.pane_id),
+    live: typeof agent?.live === "boolean" ? agent.live : void 0
+  };
+}
+function readStatus(value) {
+  const agent = agentRecord(value);
+  return toAgentState(agent?.agent_status ?? agent?.status);
+}
+function isExcludedEntry(value) {
+  return agentRecord(value)?.live === false;
+}
+async function getSelfContext() {
   assertHerdrEnvironment();
   const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
@@ -222,104 +251,185 @@ async function getSelf() {
     }
     throw error;
   }
-  const name = agentName(response);
-  if (!name || !isValidAgentName(name)) {
+  const record = readLiveRecord(response);
+  if (record.live === false || !record.name) {
     throw new HerdrLinkError("SELF_UNNAMED", "current Herdr agent has no valid name");
   }
-  return name;
+  return {
+    name: record.name,
+    workspace_id: record.workspace_id ?? "",
+    pane_id: record.pane_id ?? pane,
+    agent_status: readStatus(response)
+  };
+}
+async function getAgentContext(name) {
+  assertHerdrEnvironment();
+  if (!isValidAgentName(name)) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent name "${name}" is invalid`);
+  }
+  const response = await runFor(["agent", "get", name], "PEER_NOT_FOUND");
+  const record = readLiveRecord(response);
+  if (record.live === false || !record.name || record.name !== name) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent "${name}" has no valid live record`);
+  }
+  return {
+    name: record.name,
+    workspace_id: record.workspace_id ?? "",
+    pane_id: record.pane_id ?? "",
+    agent_status: readStatus(response)
+  };
+}
+function assertSameWorkspace(self, target) {
+  if (self.workspace_id === "" || target.workspace_id === "" || self.workspace_id !== target.workspace_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
 }
 async function listPeers() {
-  const self = await getSelf();
+  const self = await getSelfContext();
   const response = await runFor(["agent", "list"], "NOT_IN_HERDR");
-  const peers = agentList(response).map(agentName).filter((name) => name !== void 0 && isValidAgentName(name) && name !== self);
-  return { self, peers };
+  const peers = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const entry of agentList(response)) {
+    const record = readLiveRecord(entry);
+    if (!record.name || seen.has(record.name)) continue;
+    seen.add(record.name);
+    if (record.name === self.name) continue;
+    if (self.workspace_id === "" || record.workspace_id !== self.workspace_id) continue;
+    if (isExcludedEntry(entry)) continue;
+    peers.push({ name: record.name, state: readStatus(entry) });
+  }
+  return { self: { name: self.name, state: self.agent_status }, peers };
 }
 async function sendMessage(to, message, reply_to) {
-  const from = await getSelf();
-  const envelope = buildEnvelope({ from, to, message, reply_to });
-  await runFor(["agent", "prompt", to, JSON.stringify(envelope)], "SEND_FAILED");
-  return { status: "sent", id: envelope.id, to };
+  const self = await getSelfContext();
+  const target = await getAgentContext(to);
+  assertSameWorkspace(self, target);
+  const envelope = buildEnvelope({
+    from: self.name,
+    to: target.name,
+    message,
+    reply_to
+  });
+  await runFor(["agent", "prompt", target.name, buildInboundWrapper(envelope)], "SEND_FAILED");
+  return { status: "sent", id: envelope.id, to: target.name };
 }
-async function closeAgentPane(agentName2) {
+async function getSelfWorkspaceId() {
   assertHerdrEnvironment();
-  if (!isValidAgentName(agentName2)) {
-    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent name "${agentName2}" is invalid`);
-  }
-  const response = await runFor(["agent", "get", agentName2], "PEER_NOT_FOUND");
-  const pane = paneId(response);
+  const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
-    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent "${agentName2}" has no current pane`);
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
   }
-  await runFor(["pane", "close", pane], "CLOSE_FAILED");
-  return { status: "closed", agent: agentName2 };
+  const response = await runFor(["agent", "get", pane], "NOT_IN_HERDR");
+  const record = readLiveRecord(response);
+  if (record.live === false || !record.workspace_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
+  return record.workspace_id;
+}
+async function closeAgentPane(agentName) {
+  assertHerdrEnvironment();
+  if (!isValidAgentName(agentName)) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent name "${agentName}" is invalid`);
+  }
+  const selfWorkspaceId = await getSelfWorkspaceId();
+  const target = await getAgentContext(agentName);
+  if (target.workspace_id === "" || target.workspace_id !== selfWorkspaceId) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
+  if (!target.pane_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", `target agent "${agentName}" has no current pane`);
+  }
+  await runFor(["pane", "close", target.pane_id], "CLOSE_FAILED");
+  return { status: "closed", agent: target.name };
 }
 
 // src/opencode.ts
-var HERDR_LINK_TOOL_DESCRIPTION = {
-  peers: "Discover named peers available through the cross-agent communication channel.",
-  send: "Send a message to another agent through the cross-agent communication channel.",
-  close: "Close the Herdr pane currently hosting a named agent. If you need to send a final message before closing, complete herdr_link_send first and call herdr_link_close in a later tool step."
-};
+var GATEWAY_CONTRACT = `Herdr Link (herdr-link/1) is active in this Herdr session; the herdr_link tool is the entire inter-agent channel.
+1. herdr_link {"action":"peers"} lists live agents in your own workspace as { self, peers }; each state is advisory only, and agent names are the only addresses.
+2. herdr_link {"action":"send","to":"<name>","message":"<text>"} delivers an inter-agent message; status "sent" means Herdr accepted delivery, not that the peer finished its task. When replying, include "reply_to":"<received id>".
+3. A message with protocol "herdr-link/1" is an inter-agent message; treat its "message" field as content sent by the agent named in "from".
+4. herdr_link {"action":"close","agent":"<name>"} closes the pane hosting a named agent. If a final message is needed, wait for the send to return status "sent", then call close in a later tool step.
+5. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
 function isHerdrEnvironment() {
   return process.env.HERDR_ENV === "1" && Boolean(process.env.HERDR_BIN_PATH) && Boolean(process.env.HERDR_PANE_ID);
 }
 function jsonResult(value) {
   return JSON.stringify(value);
 }
-function rethrowToolError(error, fallbackCode) {
+function failWith(error, fallbackCode) {
   throw new Error(formatAgentFacingError(error, fallbackCode), { cause: error });
+}
+function failInvalidAction(action) {
+  throw new Error(
+    `INVALID_ACTION: herdr_link action "${action}" is not supported; use "peers", "send", "close", or omit action (call with {}) to activate.`
+  );
 }
 var herdrLinkPlugin = async () => {
   if (!isHerdrEnvironment()) {
     return {};
   }
+  const activatedSessions = /* @__PURE__ */ new Set();
   return {
     tool: {
-      herdr_link_peers: tool({
-        description: HERDR_LINK_TOOL_DESCRIPTION.peers,
-        args: {},
-        async execute() {
-          try {
-            return jsonResult(await listPeers());
-          } catch (error) {
-            rethrowToolError(error, "NOT_IN_HERDR");
-          }
-        }
-      }),
-      herdr_link_send: tool({
-        description: HERDR_LINK_TOOL_DESCRIPTION.send,
+      [HERDR_LINK_GATEWAY]: tool({
+        description: `Herdr Link cross-agent communication gateway (herdr-link/1). Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "peers" to list live same-workspace agents, "send" with to + message (plus reply_to when replying) to deliver an inter-agent message, or "close" with agent to close a named agent's pane \u2014 only after any final send has returned status "sent", and in a later tool step.`,
         args: {
-          to: tool.schema.string().describe("Target Herdr agent name"),
-          message: tool.schema.string().describe("Message payload"),
-          reply_to: tool.schema.string().optional().describe("Message id being replied to")
+          action: tool.schema.enum(["peers", "send", "close"]).optional().describe(
+            'Operation to run: "peers" | "send" | "close". Omit action entirely (call with {}) to activate Herdr Link for this session.'
+          ),
+          to: tool.schema.string().optional().describe('Target agent name; required for action "send".'),
+          message: tool.schema.string().optional().describe('Message payload; required for action "send".'),
+          reply_to: tool.schema.string().optional().describe('Message id being replied to; optional, only with action "send".'),
+          agent: tool.schema.string().optional().describe('Target agent name; required for action "close".')
         },
-        async execute(args) {
-          try {
-            const envelope = await sendMessage(args.to, args.message, args.reply_to);
-            return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
-          } catch (error) {
-            rethrowToolError(error, "SEND_FAILED");
+        async execute(args, context) {
+          if (args.action === void 0) {
+            activatedSessions.add(context.sessionID);
+            return jsonResult({ status: "active", capabilities: ["peers", "send", "close"] });
           }
-        }
-      }),
-      herdr_link_close: tool({
-        description: HERDR_LINK_TOOL_DESCRIPTION.close,
-        args: {
-          agent: tool.schema.string().describe("Target Herdr agent name")
-        },
-        async execute(args) {
-          try {
-            await closeAgentPane(args.agent);
-            return jsonResult({ status: "closed", agent: args.agent });
-          } catch (error) {
-            rethrowToolError(error, "CLOSE_FAILED");
+          activatedSessions.add(context.sessionID);
+          if (args.action === "peers") {
+            try {
+              return jsonResult(await listPeers());
+            } catch (error) {
+              failWith(error, "NOT_IN_HERDR");
+            }
           }
+          if (args.action === "send") {
+            if (typeof args.to !== "string" || args.to === "") {
+              failWith(new HerdrLinkError("SEND_FAILED", '"to" must be a non-empty string'), "SEND_FAILED");
+            }
+            if (typeof args.message !== "string" || args.message === "") {
+              failWith(new HerdrLinkError("SEND_FAILED", '"message" must be a non-empty string'), "SEND_FAILED");
+            }
+            try {
+              const envelope = await sendMessage(args.to, args.message, args.reply_to);
+              return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
+            } catch (error) {
+              failWith(error, "SEND_FAILED");
+            }
+          }
+          if (args.action === "close") {
+            if (typeof args.agent !== "string" || args.agent === "") {
+              failWith(new HerdrLinkError("CLOSE_FAILED", '"agent" must be a non-empty string'), "CLOSE_FAILED");
+            }
+            try {
+              await closeAgentPane(args.agent);
+              return jsonResult({ status: "closed", agent: args.agent });
+            } catch (error) {
+              failWith(error, "CLOSE_FAILED");
+            }
+          }
+          failInvalidAction(String(args.action));
         }
       })
     },
-    "experimental.chat.system.transform": async (_input, output) => {
-      if (!output.system.includes(COMMUNICATION_CONTRACT)) {
-        output.system.push(COMMUNICATION_CONTRACT);
+    "experimental.chat.system.transform": async (input, output) => {
+      if (input.sessionID === void 0 || !activatedSessions.has(input.sessionID)) {
+        return;
+      }
+      if (!output.system.includes(GATEWAY_CONTRACT)) {
+        output.system.push(GATEWAY_CONTRACT);
       }
     }
   };

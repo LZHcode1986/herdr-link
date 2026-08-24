@@ -4,14 +4,22 @@ import {
   assertHerdrEnvironment,
   attachCliOutput,
   closeAgentPane,
+  getAgentContext,
   getSelf,
+  getSelfContext,
   listPeers,
   runHerdr,
   sendMessage,
   setHerdrRunnerForTests,
   type HerdrRunner,
 } from "../src/herdr.ts";
-import { HerdrLinkError, PROTOCOL_ID, type LinkErrorCode } from "../src/protocol.ts";
+import {
+  INBOUND_WRAPPER_MARKER,
+  formatAgentFacingError,
+  HerdrLinkError,
+  PROTOCOL_ID,
+  type LinkErrorCode,
+} from "../src/protocol.ts";
 
 interface Call {
   file: string;
@@ -19,6 +27,14 @@ interface Call {
 }
 
 type MockHandler = (file: string, args: string[]) => unknown | Promise<unknown>;
+
+interface AgentRow {
+  name?: string;
+  workspace_id?: string;
+  pane_id?: string;
+  agent_status?: string;
+  live?: boolean;
+}
 
 function matchesCode(code: LinkErrorCode): (error: unknown) => boolean {
   return (error: unknown): boolean => error instanceof HerdrLinkError && error.code === code;
@@ -62,54 +78,266 @@ async function withMock(handler: MockHandler, callback: (calls: Call[]) => Promi
   }
 }
 
+function cliError(code: string, message: string, channel: "stdout" | "stderr" = "stderr"): Error {
+  const error = new Error(`Command failed: herdr ${code}`);
+  const payload = JSON.stringify({ error: { code, message }, id: "cli:test" });
+  if (channel === "stdout") attachCliOutput(error, payload, "");
+  else attachCliOutput(error, "", payload);
+  return error;
+}
+
+/** Fake Herdr CLI keyed by lookup ref (`agent get`) plus optional explicit list rows. */
+function directoryHandler(
+  directory: Record<string, AgentRow>,
+  listRows?: AgentRow[],
+): MockHandler {
+  return (_file, args) => {
+    if (args[0] === "agent" && args[1] === "get") {
+      const row = directory[args[2]!];
+      if (!row) throw cliError("agent_not_found", `agent target ${String(args[2])} not found`);
+      return { result: { agent: row } };
+    }
+    if (args[0] === "agent" && args[1] === "list") {
+      return { result: { agents: listRows ?? Object.values(directory) } };
+    }
+    if (args[0] === "agent" && args[1] === "prompt") return { result: { accepted: true } };
+    if (args[0] === "pane" && args[1] === "close") return { result: { closed: true } };
+    throw new Error(`unexpected mock args: ${args.join(" ")}`);
+  };
+}
+
+function baseDirectory(): Record<string, AgentRow> {
+  return {
+    "self-pane": { name: "brain", workspace_id: "ws-1", pane_id: "w1:p1", agent_status: "idle" },
+    "worker-a": { name: "worker-a", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" },
+  };
+}
+
 test("Herdr control layer", async (t) => {
-  await t.test("successful identity, peer discovery, send, and close paths", async () => {
-    await withMock(async (_file, args) => {
-      if (args[0] === "agent" && args[1] === "get" && args[2] === "self-pane") {
-        return { result: { agent: { name: "brain", pane_id: "w1:p1" } } };
+  await t.test("resolves live self context fresh on every call and ignores HERDR_WORKSPACE_ID", async () => {
+    await withMock(directoryHandler(baseDirectory()), async (calls) => {
+      process.env.HERDR_WORKSPACE_ID = "stale-ws";
+      try {
+        assert.deepEqual(await getSelfContext(), {
+          name: "brain",
+          workspace_id: "ws-1",
+          pane_id: "w1:p1",
+          agent_status: "idle",
+        });
+        assert.equal(await getSelf(), "brain");
+
+        // Every call goes through agent get <HERDR_PANE_ID>; nothing cached.
+        const selfGets = calls.filter(
+          (call) => call.args[0] === "agent" && call.args[1] === "get" && call.args[2] === "self-pane",
+        );
+        assert.deepEqual(selfGets.map((call) => call.args.slice(0, 3)), [
+          ["agent", "get", "self-pane"],
+          ["agent", "get", "self-pane"],
+        ]);
+      } finally {
+        delete process.env.HERDR_WORKSPACE_ID;
       }
-      if (args[0] === "agent" && args[1] === "list") {
-        return {
-          result: {
-            agents: [
-              { name: "brain", pane_id: "w1:p1" },
-              { name: "worker-a", pane_id: "w1:p2" },
-              { name: "worker_b", pane_id: "w1:p3" },
-              { name: "" },
-              { pane_id: "w1:p4" },
-            ],
-          },
-        };
-      }
-      if (args[0] === "agent" && args[1] === "prompt") return { result: { accepted: true } };
-      if (args[0] === "agent" && args[1] === "get" && args[2] === "worker-a") {
-        return { result: { agent: { name: "worker-a", pane_id: "w1:p2" } } };
-      }
-      if (args[0] === "pane" && args[1] === "close") return { result: { closed: true } };
-      throw new Error(`unexpected mock args: ${args.join(" ")}`);
-    }, async (calls) => {
-      assert.equal(await getSelf(), "brain");
-      assert.deepEqual(await listPeers(), { self: "brain", peers: ["worker-a", "worker_b"] });
+    });
+  });
+
+  await t.test("lists same-workspace peers with state mapping, delivers the inbound wrapper, closes live panes", async () => {
+    const listRows: AgentRow[] = [
+      { name: "brain", workspace_id: "ws-1", pane_id: "w1:p1", agent_status: "idle" }, // self -> excluded
+      { name: "worker-a", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" },
+      { name: "worker_b", workspace_id: "ws-1", pane_id: "w1:p3", agent_status: "blocked" },
+      { name: "reviewer", workspace_id: "ws-1", pane_id: "w1:p4", agent_status: "done" },
+      { pane_id: "w1:p5" }, // unnamed
+      { name: "", workspace_id: "ws-1" }, // empty name
+      { name: "Brain", workspace_id: "ws-1", pane_id: "w1:p6" }, // invalid name
+      { name: "stranger", workspace_id: "ws-2", pane_id: "w1:p7", agent_status: "blocked" }, // other workspace
+      { name: "worker-nows", pane_id: "w1:p8", agent_status: "idle" }, // no workspace reported
+      { name: "retired", workspace_id: "ws-1", pane_id: "w1:p9", live: false }, // explicitly not live
+      { name: "mystery", workspace_id: "ws-1", pane_id: "w1:p10", agent_status: "on_fire" }, // unmapped status
+    ];
+    const directory = baseDirectory();
+    directory["worker-b-key"] = { name: "worker_b", workspace_id: "ws-1", pane_id: "w1:p3", agent_status: "blocked" };
+
+    await withMock(directoryHandler(directory, listRows), async (calls) => {
+      assert.deepEqual(await listPeers(), {
+        self: { name: "brain", state: "idle" },
+        peers: [
+          { name: "worker-a", state: "working" },
+          { name: "worker_b", state: "blocked" },
+          { name: "reviewer", state: "done" },
+          { name: "mystery", state: "unknown" },
+        ],
+      });
 
       const sent = await sendMessage("worker-a", "hello", "hl_previous_1");
       assert.equal(sent.status, "sent");
       assert.equal(sent.to, "worker-a");
 
-      const envelope = JSON.parse(calls[4]!.args[3]!) as Record<string, unknown>;
-      assert.equal(envelope.protocol, PROTOCOL_ID);
-      assert.equal(envelope.from, "brain");
-      assert.equal(envelope.to, "worker-a");
-      assert.equal(envelope.message, "hello");
-      assert.equal(envelope.reply_to, "hl_previous_1");
-      assert.equal(sent.id, envelope.id);
-      assert.deepEqual(calls[4]!.args.slice(0, 3), ["agent", "prompt", "worker-a"]);
-      assert.equal(calls[4]!.args.length, 4);
+      const promptCall = calls.find((call) => call.args[0] === "agent" && call.args[1] === "prompt")!;
+      assert.deepEqual(promptCall.args.slice(0, 3), ["agent", "prompt", "worker-a"]);
+      assert.equal(promptCall.args.length, 4);
+      assert.equal(promptCall.args.includes("--wait"), false);
+
+      const wrapperText = promptCall.args[3]!;
+      assert.ok(wrapperText.startsWith(INBOUND_WRAPPER_MARKER));
+      assert.ok(wrapperText.includes("From: brain"));
+      assert.ok(wrapperText.includes(`Message id: ${sent.id}`));
+      assert.ok(wrapperText.includes('to="brain"'));
+      assert.ok(wrapperText.includes(`reply_to="${sent.id}"`));
+      const embedded = JSON.parse(wrapperText.split("\n").at(-1)!) as Record<string, unknown>;
+      // Outer wrapper never enters the envelope: minimal herdr-link/1 fields only.
+      assert.deepEqual(embedded, {
+        protocol: PROTOCOL_ID,
+        id: sent.id,
+        from: "brain",
+        to: "worker-a",
+        message: "hello",
+        reply_to: "hl_previous_1",
+      });
 
       assert.deepEqual(await closeAgentPane("worker-a"), { status: "closed", agent: "worker-a" });
-      assert.deepEqual(calls.map((call) => call.file), Array(7).fill("/mock/herdr"));
-      assert.deepEqual(calls[6]!.args, ["pane", "close", "w1:p2"]);
+      assert.deepEqual(calls.map((call) => call.file), Array(8).fill("/mock/herdr"));
+      assert.deepEqual(calls.map((call) => call.args.slice(0, 3)), [
+        ["agent", "get", "self-pane"], // peers: resolve self
+        ["agent", "list"],
+        ["agent", "get", "self-pane"], // send: resolve self
+        ["agent", "get", "worker-a"], // send: resolve target
+        ["agent", "prompt", "worker-a"],
+        ["agent", "get", "self-pane"], // close: resolve self
+        ["agent", "get", "worker-a"], // close: resolve target
+        ["pane", "close", "w1:p2"], // freshly-read authoritative pane
+      ]);
     });
   });
+
+  await t.test("keeps cross-workspace targets invisible with the privacy-preserving peer-not-found wording", async () => {
+    const directory = baseDirectory();
+    directory["stranger"] = { name: "stranger", workspace_id: "ws-2", pane_id: "w1:p7", agent_status: "blocked" };
+    directory["worker-nows"] = { name: "worker-nows", pane_id: "w1:p8", agent_status: "idle" };
+
+    await withMock(directoryHandler(directory), async (calls) => {
+      const sendError = await sendMessage("stranger", "hi").then(
+        () => null,
+        (error: unknown) => error,
+      );
+      assert.ok(sendError instanceof HerdrLinkError);
+      assert.equal(sendError.code, "PEER_NOT_FOUND");
+      assert.equal(sendError.message, "PEER_NOT_FOUND: target agent is not a live peer");
+      assert.equal(formatAgentFacingError(sendError, "SEND_FAILED"), "PEER_NOT_FOUND: target agent is not a live peer");
+
+      await assert.rejects(closeAgentPane("stranger"), matchesCode("PEER_NOT_FOUND"));
+
+      // Unreported workspace fails closed with the same wording.
+      const nowsError = await sendMessage("worker-nows", "hi").then(
+        () => null,
+        (error: unknown) => error,
+      );
+      assert.ok(nowsError instanceof HerdrLinkError && nowsError.code === "PEER_NOT_FOUND");
+      assert.equal(nowsError.message, "PEER_NOT_FOUND: target agent is not a live peer");
+
+      // Nothing was delivered and no pane was touched.
+      assert.equal(calls.some((call) => call.args[1] === "prompt"), false);
+      assert.equal(calls.some((call) => call.args[0] === "pane"), false);
+      assert.deepEqual(calls.filter((call) => call.args[2] === "stranger").map((call) => call.args.slice(0, 3)), [
+        ["agent", "get", "stranger"],
+        ["agent", "get", "stranger"],
+      ]);
+    });
+  });
+
+  await t.test("re-resolves live self workspace after a pane move between workspaces", async () => {
+    const directory = baseDirectory();
+    directory["stranger"] = { name: "stranger", workspace_id: "ws-2", pane_id: "w1:p7", agent_status: "blocked" };
+    const listRows: AgentRow[] = [
+      { name: "worker-a", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" },
+      { name: "stranger", workspace_id: "ws-2", pane_id: "w1:p7", agent_status: "blocked" },
+    ];
+
+    await withMock(directoryHandler(directory, listRows), async () => {
+      assert.deepEqual(await listPeers(), {
+        self: { name: "brain", state: "idle" },
+        peers: [{ name: "worker-a", state: "working" }],
+      });
+
+      // The caller pane moves to ws-2; ambient env stays stale and must lose.
+      directory["self-pane"]!.workspace_id = "ws-2";
+      assert.deepEqual(await getSelfContext(), {
+        name: "brain",
+        workspace_id: "ws-2",
+        pane_id: "w1:p1",
+        agent_status: "idle",
+      });
+      assert.deepEqual(await listPeers(), {
+        self: { name: "brain", state: "idle" },
+        peers: [{ name: "stranger", state: "blocked" }],
+      });
+      await assert.rejects(sendMessage("worker-a", "hi"), matchesCode("PEER_NOT_FOUND"));
+      assert.equal((await sendMessage("stranger", "hello")).status, "sent");
+
+      // HERDR_WORKSPACE_ID is never authority: live record wins.
+      process.env.HERDR_WORKSPACE_ID = "ws-1";
+      try {
+        assert.equal((await getSelfContext()).workspace_id, "ws-2");
+        await assert.rejects(sendMessage("worker-a", "hi"), matchesCode("PEER_NOT_FOUND"));
+      } finally {
+        delete process.env.HERDR_WORKSPACE_ID;
+      }
+
+      // Moving back flips visibility again — proves no caching anywhere.
+      directory["self-pane"]!.workspace_id = "ws-1";
+      assert.deepEqual((await listPeers()).peers, [{ name: "worker-a", state: "working" }]);
+      assert.equal((await sendMessage("worker-a", "back")).status, "sent");
+    });
+  });
+
+  await t.test("surfaces a stale/deleted Herdr binary as NOT_IN_HERDR instead of SEND_FAILED/CLOSE_FAILED", async () => {
+    const previous = {
+      env: process.env.HERDR_ENV,
+      bin: process.env.HERDR_BIN_PATH,
+      pane: process.env.HERDR_PANE_ID,
+    };
+    process.env.HERDR_ENV = "1";
+    process.env.HERDR_BIN_PATH = "/nonexistent-herdr-test-path/no-such-binary";
+    process.env.HERDR_PANE_ID = "self-pane";
+    setHerdrRunnerForTests(undefined); // exercise real execFile IO
+    try {
+      await assert.rejects(listPeers(), matchesCode("NOT_IN_HERDR"));
+      await assert.rejects(sendMessage("worker-a", "hello"), matchesCode("NOT_IN_HERDR"));
+      await assert.rejects(closeAgentPane("worker-a"), matchesCode("NOT_IN_HERDR"));
+    } finally {
+      setHerdrRunnerForTests(undefined);
+      restoreEnv("HERDR_ENV", previous.env);
+      restoreEnv("HERDR_BIN_PATH", previous.bin);
+      restoreEnv("HERDR_PANE_ID", previous.pane);
+    }
+  });
+
+  await t.test("passes invalid CLI JSON and transport failures through as NOT_IN_HERDR", async () => {
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "get" && args[2] === "self-pane") {
+        return { result: { agent: { name: "brain", workspace_id: "ws-1", pane_id: "w1:p1", agent_status: "idle" } } };
+      }
+      if (args[0] === "agent" && args[1] === "get" && args[2] === "worker-a") {
+        return { result: { agent: { name: "worker-a", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } } };
+      }
+      // Invalid CLI JSON at the delivery step: environment-level failure, not SEND_FAILED.
+      return "{{{ this is not json";
+    }, async () => {
+      await assert.rejects(sendMessage("worker-a", "hello"), matchesCode("NOT_IN_HERDR"));
+    });
+
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "get") {
+        return args[2] === "self-pane"
+          ? { result: { agent: { name: "brain", workspace_id: "ws-1", pane_id: "w1:p1", agent_status: "idle" } } }
+          : { result: { agent: { name: "worker-a", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } } };
+      }
+      throw new Error("socket hang up"); // transport failure at prompt / pane-close steps
+    }, async () => {
+      await assert.rejects(sendMessage("worker-a", "hello"), matchesCode("NOT_IN_HERDR"));
+      await assert.rejects(closeAgentPane("worker-a"), matchesCode("NOT_IN_HERDR"));
+    });
+  });
+
 
   await t.test("returns NOT_IN_HERDR when the environment is unavailable", async () => {
     await withMock(async () => ({ ok: true }), async (calls) => {
@@ -119,135 +347,121 @@ test("Herdr control layer", async (t) => {
 
       process.env.HERDR_ENV = "1";
       delete process.env.HERDR_BIN_PATH;
-      await assert.rejects(getSelf(), matchesCode("NOT_IN_HERDR"));
+      await assert.rejects(getSelfContext(), matchesCode("NOT_IN_HERDR"));
       assert.equal(calls.length, 0);
     });
   });
 
   await t.test("returns SELF_UNNAMED when self identity cannot be resolved", async () => {
-    await withMock(async () => ({ result: { agent: { name: "" } } }), async (calls) => {
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "get" && args[2] === "blank-name") {
+        return { result: { agent: { workspace_id: "ws-1", pane_id: "w1:pX" } } };
+      }
+      return { result: { agent: { name: "", workspace_id: "ws-1" } } };
+    }, async (calls) => {
       delete process.env.HERDR_PANE_ID;
-      await assert.rejects(getSelf(), matchesCode("SELF_UNNAMED"));
+      await assert.rejects(getSelfContext(), matchesCode("SELF_UNNAMED"));
+      assert.equal(calls.length, 0);
 
       process.env.HERDR_PANE_ID = "self-pane";
-      await assert.rejects(getSelf(), matchesCode("SELF_UNNAMED"));
+      await assert.rejects(getSelfContext(), matchesCode("SELF_UNNAMED"));
       assert.equal(calls.length, 1);
+
+      // A named-agent lookup against the caller pane keeps SELF_UNNAMED semantics.
+      process.env.HERDR_PANE_ID = "blank-name";
+      await assert.rejects(getSelfContext(), matchesCode("SELF_UNNAMED"));
+      assert.equal(calls.length, 2);
     });
   });
 
-  await t.test("maps self agent_not_found CLI errors to SELF_UNNAMED", async () => {
+  await t.test("maps agent_not_found CLI errors on the self pane to SELF_UNNAMED", async () => {
     await withMock(async () => {
-      const error = new Error("Command failed: herdr target not found");
-      attachCliOutput(
-        error,
-        "",
-        JSON.stringify({
-          error: { code: "agent_not_found", message: "agent target self-pane not found" },
-          id: "cli:agent:get",
-        }),
-      );
-      throw error;
+      throw cliError("agent_not_found", "agent target self-pane not found");
     }, async (calls) => {
-      const matchesSelfUnnamed = (error: unknown): boolean =>
-        error instanceof HerdrLinkError &&
-        error.code === "SELF_UNNAMED" &&
-        error.message.includes("agent target self-pane not found");
-      await assert.rejects(getSelf(), matchesSelfUnnamed);
+      await assert.rejects(getSelfContext(), matchesCode("SELF_UNNAMED"));
       assert.deepEqual(calls[0]!.args, ["agent", "get", "self-pane"]);
     });
   });
 
-  await t.test("returns PEER_NOT_FOUND when the target cannot be resolved", async () => {
-    await withMock(async () => {
-      throw new Error("agent not found");
-    }, async (calls) => {
-      await assert.rejects(closeAgentPane("worker-a"), matchesCode("PEER_NOT_FOUND"));
-      assert.deepEqual(calls[0]!.args, ["agent", "get", "worker-a"]);
-      assert.equal(calls.length, 1);
+  await t.test("getAgentContext resolves the full live target context", async () => {
+    await withMock(directoryHandler(baseDirectory()), async (calls) => {
+      assert.deepEqual(await getAgentContext("worker-a"), {
+        name: "worker-a",
+        workspace_id: "ws-1",
+        pane_id: "w1:p2",
+        agent_status: "working",
+      });
+      assert.deepEqual(calls.at(-1)!.args.slice(0, 3), ["agent", "get", "worker-a"]);
+
+      await assert.rejects(getAgentContext("ghost"), matchesCode("PEER_NOT_FOUND"));
+    });
+
+    await withMock(directoryHandler(baseDirectory()), async (calls) => {
+      // Invalid names short-circuit without touching Herdr.
+      await assert.rejects(getAgentContext("Brain"), matchesCode("PEER_NOT_FOUND"));
+      assert.equal(calls.length, 0);
     });
   });
 
-  await t.test("returns SEND_FAILED when prompt delivery fails", async () => {
-    await withMock(async (_file, args) => {
-      if (args[0] === "agent" && args[1] === "get") {
-        return { result: { agent: { name: "brain", pane_id: "w1:p1" } } };
-      }
-      throw new Error("prompt rejected");
-    }, async (calls) => {
-      await assert.rejects(sendMessage("worker-a", "hello"), matchesCode("SEND_FAILED"));
-      assert.deepEqual(calls.map((call) => call.args.slice(0, 3)), [
-        ["agent", "get", "self-pane"],
-        ["agent", "prompt", "worker-a"],
-      ]);
-      assert.equal(calls[1]!.args.includes("--wait"), false);
+  await t.test("classifies model-input validation failures as SEND_FAILED without delivering", async () => {
+    await withMock(directoryHandler(baseDirectory()), async (calls) => {
+      await assert.rejects(sendMessage("worker-a", "   "), matchesCode("SEND_FAILED"));
+      await assert.rejects(sendMessage("worker-a", "hello", "hl_bad"), matchesCode("SEND_FAILED"));
+      assert.equal(calls.some((call) => call.args[1] === "prompt"), false);
     });
   });
 
-  await t.test("returns CLOSE_FAILED when pane close fails", async () => {
-    await withMock(async (_file, args) => {
-      if (args[0] === "agent" && args[1] === "get") {
-        return { result: { agent: { name: "worker-a", pane_id: "w1:p2" } } };
-      }
-      throw new Error("pane close rejected");
-    }, async (calls) => {
-      await assert.rejects(closeAgentPane("worker-a"), matchesCode("CLOSE_FAILED"));
-      assert.deepEqual(calls.map((call) => call.args), [
-        ["agent", "get", "worker-a"],
-        ["pane", "close", "w1:p2"],
-      ]);
-    });
-  });
-  await t.test("maps agent_not_found CLI errors to PEER_NOT_FOUND", async () => {
-    await withMock(async (_file, args) => {
-      if (args[0] === "agent" && args[1] === "get" && args[2] === "self-pane") {
-        return { result: { agent: { name: "brain", pane_id: "w1:p1" } } };
-      }
-      const error = new Error("Command failed: herdr target not found");
-      attachCliOutput(
-        error,
-        JSON.stringify({
-          error: { code: "agent_not_found", message: "agent target nonexistent-agent not found" },
-          id: "cli:agent:prompt",
-        }),
-        "",
-      );
-      throw error;
-    }, async (calls) => {
-      await assert.rejects(sendMessage("nonexistent-agent", "hello"), matchesCode("PEER_NOT_FOUND"));
-      await assert.rejects(closeAgentPane("nonexistent-agent"), matchesCode("PEER_NOT_FOUND"));
-      assert.deepEqual(calls.map((call) => call.args.slice(0, 3)), [
-        ["agent", "get", "self-pane"],
-        ["agent", "prompt", "nonexistent-agent"],
-        ["agent", "get", "nonexistent-agent"],
-      ]);
-    });
-  });
-  await t.test("maps agent_not_found stderr JSON to PEER_NOT_FOUND with CLI detail", async () => {
-    await withMock(async (_file, args) => {
-      if (args[0] === "agent" && args[1] === "get" && args[2] === "self-pane") {
-        return { result: { agent: { name: "brain", pane_id: "w1:p1" } } };
-      }
-      const error = new Error("Command failed: herdr target not found");
-      attachCliOutput(
-        error,
-        "",
-        JSON.stringify({
-          error: { code: "agent_not_found", message: "agent target nonexistent-agent-xyz not found" },
-          id: "cli:agent:prompt",
-        }),
-      );
-      throw error;
-    }, async (calls) => {
-      const matchesCliAgentNotFound = (error: unknown): boolean =>
+  await t.test("maps agent_not_found target lookups to PEER_NOT_FOUND for send and close", async () => {
+    await withMock(directoryHandler(baseDirectory()), async (calls) => {
+      const matchesCliNotFound = (error: unknown): boolean =>
         error instanceof HerdrLinkError &&
         error.code === "PEER_NOT_FOUND" &&
-        error.message.includes("agent target nonexistent-agent-xyz not found");
-      await assert.rejects(sendMessage("nonexistent-agent-xyz", "hello"), matchesCliAgentNotFound);
-      await assert.rejects(closeAgentPane("nonexistent-agent-xyz"), matchesCliAgentNotFound);
+        error.message.includes("agent target ghost not found");
+      await assert.rejects(sendMessage("ghost", "hello"), matchesCliNotFound);
+      await assert.rejects(closeAgentPane("ghost"), matchesCliNotFound);
       assert.deepEqual(calls.map((call) => call.args.slice(0, 3)), [
         ["agent", "get", "self-pane"],
-        ["agent", "prompt", "nonexistent-agent-xyz"],
-        ["agent", "get", "nonexistent-agent-xyz"],
+        ["agent", "get", "ghost"],
+        ["agent", "get", "self-pane"],
+        ["agent", "get", "ghost"],
+      ]);
+      assert.equal(calls.some((call) => call.args[1] === "prompt" || call.args[0] === "pane"), false);
+    });
+
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "get" && args[2] === "self-pane") {
+        return { result: { agent: { name: "brain", workspace_id: "ws-1", pane_id: "w1:p1", agent_status: "idle" } } };
+      }
+      throw cliError("agent_not_found", "agent target ghost not found", "stdout");
+    }, async () => {
+      await assert.rejects(sendMessage("ghost", "hello"), matchesCode("PEER_NOT_FOUND"));
+      await assert.rejects(closeAgentPane("ghost"), matchesCode("PEER_NOT_FOUND"));
+    });
+  });
+
+  await t.test("closes whatever pane id the live record currently reports", async () => {
+    const directory = baseDirectory();
+    await withMock(directoryHandler(directory), async (calls) => {
+      assert.deepEqual(await closeAgentPane("worker-a"), { status: "closed", agent: "worker-a" });
+      directory["worker-a"]!.pane_id = "w9:p9"; // pane moved between calls
+      assert.deepEqual(await closeAgentPane("worker-a"), { status: "closed", agent: "worker-a" });
+
+      const closeCalls = calls.filter((call) => call.args[0] === "pane");
+      assert.deepEqual(closeCalls.map((call) => call.args), [
+        ["pane", "close", "w1:p2"],
+        ["pane", "close", "w9:p9"],
+      ]);
+    });
+  });
+  await t.test("close only needs the caller workspace, not a caller Agent Name", async () => {
+    const directory = baseDirectory();
+    delete directory["self-pane"]!.name;
+    await withMock(directoryHandler(directory), async (calls) => {
+      assert.deepEqual(await closeAgentPane("worker-a"), { status: "closed", agent: "worker-a" });
+      assert.deepEqual(calls.map((call) => call.args), [
+        ["agent", "get", "self-pane"],
+        ["agent", "get", "worker-a"],
+        ["pane", "close", "w1:p2"],
       ]);
     });
   });

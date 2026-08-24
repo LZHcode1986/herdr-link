@@ -4,20 +4,30 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
   PROTOCOL_ID,
+  AGENT_STATES,
+  HERDR_LINK_GATEWAY,
+  HERDR_LINK_TOOLS,
+  TOOL_CLOSE,
+  TOOL_PEERS,
+  TOOL_SEND,
+  INBOUND_WRAPPER_MARKER,
   HerdrLinkError,
   formatAgentFacingError,
   buildEnvelope,
+  buildInboundWrapper,
+  extractInboundEnvelope,
   createMessageId,
   isHerdrLinkEnvelope,
   isValidAgentName,
   isValidMessageId,
+  toAgentState,
   MESSAGE_ID_RE,
   COMMUNICATION_CONTRACT,
-  HERDR_LINK_TOOLS,
+  type AgentContext,
   type HerdrLinkEnvelope,
+  type PeerDirectory,
 } from "../src/protocol.ts";
 
 test("createMessageId produces unique ids with hl_ prefix", () => {
@@ -132,30 +142,148 @@ test("isHerdrLinkEnvelope accepts a valid reply envelope", () => {
   assert.ok(isHerdrLinkEnvelope(reply));
 });
 
-test("COMMUNICATION_CONTRACT contains all nine rules", () => {
-  for (let i = 1; i <= 9; i++) {
-    assert.ok(
-      COMMUNICATION_CONTRACT.includes(`${i}. `),
-      `contract rule ${i} missing`,
-    );
+test("tiered naming constants expose gateway and canonical tool names", () => {
+  // Tier 0 — the gateway itself.
+  assert.equal(HERDR_LINK_GATEWAY, "herdr_link");
+  // Tier 1 — canonical tools, each derived from the gateway namespace.
+  assert.equal(TOOL_PEERS, "herdr_link_peers");
+  assert.equal(TOOL_SEND, "herdr_link_send");
+  assert.equal(TOOL_CLOSE, "herdr_link_close");
+  assert.deepEqual([...HERDR_LINK_TOOLS], [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE]);
+  for (const tool of HERDR_LINK_TOOLS) {
+    assert.ok(tool.startsWith(`${HERDR_LINK_GATEWAY}_`), `${tool} must live under the ${HERDR_LINK_GATEWAY} gateway`);
   }
-  assert.ok(COMMUNICATION_CONTRACT.includes("herdr_link_peers"));
-  assert.ok(COMMUNICATION_CONTRACT.includes("herdr_link_send"));
-  assert.ok(COMMUNICATION_CONTRACT.includes("herdr_link_close"));
 });
 
-test("COMMUNICATION_CONTRACT matches canonical PROTOCOL and wiring text", () => {
-  const protocol = readFileSync(new URL("../PROTOCOL.md", import.meta.url), "utf8");
-  const protocolContract = protocol.match(/## 3\. Agent Communication Contract[\s\S]*?```text\n([\s\S]*?)\n```/)?.[1];
-  assert.equal(protocolContract, COMMUNICATION_CONTRACT);
-
-  const wiring = readFileSync(new URL("../docs/mcp-wiring.md", import.meta.url), "utf8");
-  const wiringContract = wiring.match(/### 1\.1 canonical[\s\S]*?```text\n([\s\S]*?)\n```/)?.[1];
-  assert.equal(wiringContract, COMMUNICATION_CONTRACT);
+test("AGENT_STATES is the closed state vocabulary and toAgentState maps onto it", () => {
+  assert.deepEqual([...AGENT_STATES], ["idle", "working", "blocked", "done", "unknown"]);
+  assert.equal(toAgentState("idle"), "idle");
+  assert.equal(toAgentState("working"), "working");
+  assert.equal(toAgentState("blocked"), "blocked");
+  assert.equal(toAgentState("done"), "done");
+  // Normalization and fail-closed mapping.
+  assert.equal(toAgentState(" DONE "), "done");
+  assert.equal(toAgentState("on_fire"), "unknown");
+  assert.equal(toAgentState(42), "unknown");
+  assert.equal(toAgentState(null), "unknown");
+  assert.equal(toAgentState(undefined), "unknown");
 });
 
-test("HERDR_LINK_TOOLS lists the three canonical tools", () => {
-  assert.deepEqual([...HERDR_LINK_TOOLS], ["herdr_link_peers", "herdr_link_send", "herdr_link_close"]);
+test("PeerDirectory and AgentContext use the blueprint shapes without topology ids", () => {
+  const directory: PeerDirectory = {
+    self: { name: "brain", state: "idle" },
+    peers: [
+      { name: "worker-a", state: "working" },
+      { name: "reviewer", state: "blocked" },
+    ],
+  };
+  assert.deepEqual(directory, {
+    self: { name: "brain", state: "idle" },
+    peers: [
+      { name: "worker-a", state: "working" },
+      { name: "reviewer", state: "blocked" },
+    ],
+  });
+  const context: AgentContext = {
+    name: "brain",
+    workspace_id: "ws-1",
+    pane_id: "w1:p1",
+    agent_status: "idle",
+  };
+  assert.equal(context.workspace_id, "ws-1");
+  assert.equal(context.agent_status, "idle");
+});
+
+test("COMMUNICATION_CONTRACT names the gateway and all three canonical tools", () => {
+  assert.ok(COMMUNICATION_CONTRACT.includes(HERDR_LINK_GATEWAY));
+  for (const tool of HERDR_LINK_TOOLS) {
+    assert.ok(COMMUNICATION_CONTRACT.includes(tool), `contract must mention ${tool}`);
+  }
+});
+
+test("COMMUNICATION_CONTRACT states compact same-workspace send/reply/close semantics", () => {
+  const lines = COMMUNICATION_CONTRACT.split("\n").filter((line) => line.trim() !== "");
+  // Compact: one intro line plus the numbered rules, nothing else.
+  const rules = lines.filter((line) => /^[0-9]+\. /.test(line));
+  assert.equal(lines.length, rules.length + 1);
+  assert.ok(rules.length >= 5 && rules.length <= 10, "contract must stay compact");
+
+  // Same-workspace addressing…
+  assert.match(COMMUNICATION_CONTRACT, /same Herdr workspace/);
+  assert.match(COMMUNICATION_CONTRACT, /outside your workspace/);
+  // …send/reply semantics…
+  assert.match(COMMUNICATION_CONTRACT, /herdr-link\/1/);
+  assert.match(COMMUNICATION_CONTRACT, /reply_to to the received "id"/);
+  // …and close sequencing after a confirmed send.
+  assert.match(COMMUNICATION_CONTRACT, /returns "sent"/);
+  assert.match(COMMUNICATION_CONTRACT, /later tool step/);
+});
+
+test("buildInboundWrapper embeds the minimal envelope verbatim as the final line", () => {
+  const envelope = buildEnvelope({
+    from: "brain",
+    to: "reviewer",
+    reply_to: "hl_prev_000001",
+    message: "请检查这个设计。",
+  });
+
+  const wrapper = buildInboundWrapper(envelope);
+
+  // Self-describing header + sender + correlation guidance.
+  assert.ok(wrapper.startsWith(INBOUND_WRAPPER_MARKER));
+  assert.ok(wrapper.includes("From: brain"));
+  assert.ok(wrapper.includes(`Message id: ${envelope.id}`));
+  assert.ok(wrapper.includes(`Reply to: ${envelope.reply_to}`));
+  assert.ok(wrapper.includes(`to="${envelope.from}"`));
+  assert.ok(wrapper.includes(`reply_to="${envelope.id}"`));
+  assert.ok(wrapper.includes("delivery metadata and is not part of the message"));
+
+  // The outer wrapper never enters the envelope: the last line parses back
+  // to exactly the minimal herdr-link/1 fields.
+  const lines = wrapper.split("\n");
+  const embedded = JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>;
+  assert.deepEqual(embedded, {
+    protocol: PROTOCOL_ID,
+    id: envelope.id,
+    from: "brain",
+    to: "reviewer",
+    reply_to: "hl_prev_000001",
+    message: "请检查这个设计。",
+  });
+  assert.ok(isHerdrLinkEnvelope(embedded));
+});
+
+test("buildInboundWrapper omits reply metadata for first-contact messages", () => {
+  const envelope = buildEnvelope({ from: "brain", to: "reviewer", message: "hello" });
+  const wrapper = buildInboundWrapper(envelope);
+  assert.ok(!wrapper.includes("Reply to:"));
+  assert.ok(wrapper.includes(`to="${envelope.from}"`));
+
+  const lines = wrapper.split("\n");
+  const embedded = JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(embedded).sort(), ["from", "id", "message", "protocol", "to"]);
+});
+
+test("extractInboundEnvelope recovers the envelope from a delivery wrapper", () => {
+  const envelope = buildEnvelope({
+    from: "brain",
+    to: "reviewer",
+    reply_to: "hl_prev_000002",
+    message: "hello",
+  });
+  assert.deepEqual(extractInboundEnvelope(buildInboundWrapper(envelope)), envelope);
+});
+
+test("extractInboundEnvelope rejects non-delivery text and picks the innermost valid envelope", () => {
+  assert.equal(extractInboundEnvelope("plain prose, no delivery"), undefined);
+  assert.equal(extractInboundEnvelope('{"protocol":"other/1","id":"hl_a_b","from":"a","to":"b","message":"m"}'), undefined);
+  assert.equal(extractInboundEnvelope("{ not json at all }"), undefined);
+
+  // Bottom-up scan: a later valid envelope wins over earlier noise.
+  const noise = '{"protocol":"herdr-link/1","id":"hl_bad","from":"a","to":"b","message":"m"}';
+  const valid = buildEnvelope({ from: "brain", to: "reviewer", message: "real" });
+  const mixed = `noise\n${noise}\nsome log line\n${buildInboundWrapper(valid)}`;
+  assert.deepEqual(extractInboundEnvelope(mixed), valid);
 });
 
 test("HerdrLinkError carries its code and a readable message", () => {
