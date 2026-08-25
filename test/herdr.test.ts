@@ -486,11 +486,13 @@ test("Herdr control layer", async (t) => {
   });
 
   await t.test("NOT_IN_HERDR keeps its classified code during bootstrap", async () => {
-    // Transport failure on the initial probe stays NOT_IN_HERDR (no rename yet).
+    // Transport failure on the initial probe stays NOT_IN_HERDR (no rename
+    // yet) and is never retried: exactly one CLI call, immediate failure.
     await withMock(() => {
       throw new Error("transport down");
-    }, async () => {
+    }, async (calls) => {
       await assert.rejects(ensureSelfName(), matchesCode("NOT_IN_HERDR"));
+      assert.equal(calls.length, 1);
     });
 
     // Transport failure on rename likewise passes through un-relabelled.
@@ -577,6 +579,36 @@ test("Herdr control layer", async (t) => {
       assert.equal(renames, 1);
       // 2 undetected probes + 1 successful probe + 1 post-rename confirmation.
       assert.equal(probes, 4);
+    });
+  });
+
+  await t.test("exhausted readiness retry leaves no poisoned state behind", async () => {
+    let detected = false;
+    let liveName = "";
+    let renames = 0;
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "rename") {
+        renames += 1;
+        liveName = String(args[3]);
+        return { ok: true };
+      }
+      if (args[0] === "agent" && args[1] === "get") {
+        if (!detected) throw cliError("agent_not_found", "agent target self-pane not found");
+        return { result: { agent: { name: liveName, workspace_id: "ws-1", pane_id: "self-pane", agent_status: "idle" } } };
+      }
+      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+    }, async () => {
+      // Budget exhausted while Herdr still has not detected the occupant.
+      await assert.rejects(ensureSelfName(), matchesCode("SELF_UNNAMED"));
+
+      // Detection completes afterwards. The very next communication call must
+      // bootstrap cleanly — no failed-flight caching, no poisoned guard state,
+      // and no reliance on the earlier startup attempt having succeeded.
+      detected = true;
+      const context = await getSelfContext();
+      assert.match(context.name, /^hl-[0-9a-f]{8}$/);
+      assert.equal(context.name, liveName);
+      assert.equal(renames, 1);
     });
   });
 

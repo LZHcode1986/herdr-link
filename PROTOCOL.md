@@ -197,11 +197,11 @@ Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool s
 
 ### 6.3 Self Identity Bootstrap（Adapter 内部机制）
 
-- 触发时机：Adapter 进入有效 Herdr 环境后执行一次 `ensureSelfName()`；`getSelfContext()` 在每条通信路径上兜底执行同一逻辑，覆盖初始化时尚未完成检测的时序窗口。初始探测对「尚未被 Herdr 检测」状态做小预算就绪重试（≤3 次、短间隔），避免启动竞态使被动 Agent 永远不可发现。
+- 触发时机：Adapter 进入有效 Herdr 环境后执行一次 `ensureSelfName()`；每条通信路径都通过 `getSelfContext()` 重新解析 self identity 并完成 bootstrap 兜底。当 self 解析暂时报告 occupant 尚未被 Herdr 检测时，初始探测做小预算有界 best-effort 就绪重试；就绪时序是 Adapter 实现细节，不依赖、不耦合 Herdr 内部 detection cadence，也不构成对检测窗口的正确性保证。
 - 执行条件：仅当当前 pane occupant 已被 Herdr 识别（live）且没有合法 Agent Name 时，才对其执行一次 `agent rename <self-pane> <generated>`；已有合法名则原样保留，绝不改写。
 - 生成名规则：Link 专属前缀 `hl-` + 随机十六进制后缀，整体满足 Agent Name 规则 `[a-z][a-z0-9_-]{0,31}`。
 - 确认方式：rename 成功后必须重新读取 authoritative live record 确认命名生效；确认失败即收敛为 `SELF_UNNAMED`。
-- 内部重试仅两类且均为小预算：① 初始探测的就绪重试（仅限未检测状态，≤3 次）；② CLI 返回 `agent_name_taken` 时的重生重试（≤3 次）。其余任何失败不做自动 retry。
+- 内部重试仅两类且均为小预算：① 初始探测的就绪重试（仅限「尚未被检测」状态）；② CLI 返回 `agent_name_taken` 时的重生重试（确定性业务冲突，非时序猜测）。其余任何失败不做自动 retry。
 - 并发去重：同一时刻至多一个 bootstrap 序列在执行（in-flight 合并），Adapter 启动自举与通信路径兜底不会并发 rename；守卫在结算后即清除，不缓存、不持久化任何名字。
 - 边界：纯 Adapter 内部机制，不向模型暴露任何 rename/claim 工具，Communication Contract 不新增指令；错误文案不得包含 raw pane ID 或 CLI 诊断。
 

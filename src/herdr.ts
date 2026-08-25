@@ -262,9 +262,11 @@ async function fetchSelfRecord(pane: string): Promise<unknown> {
       return await runFor(["agent", "get", pane], "SELF_UNNAMED");
     } catch (error) {
       // The caller pane is not (yet) a named agent target; keep self-resolution
-      // failures in the SELF_UNNAMED vocabulary. A short bounded readiness retry
-      // covers the launch race where detection has not completed yet; transport
-      // and other classified failures are never retried.
+      // failures in the SELF_UNNAMED vocabulary. The short bounded readiness
+      // retry is a best-effort bridge over transient launch races — not a
+      // correctness guarantee and never a substitute for the authoritative
+      // getSelfContext() fallback. Transport and other classified failures are
+      // never retried.
       const notDetectedYet =
         error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND";
       if (notDetectedYet && attempt < SELF_PROBE_ATTEMPTS) {
