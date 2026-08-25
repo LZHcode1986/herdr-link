@@ -1,16 +1,27 @@
 {
   "name": "herdr-link",
-  "version": "0.1.0",
-
+  "version": "0.2.0",
   "pi": {
-    "extensions": ["./src/pi.ts"]
+    "extensions": [
+      "./src/pi.ts"
+    ]
   },
-
-  "keywords": ["pi-package", "herdr", "agent-interop"],
+  "keywords": [
+    "pi-package",
+    "herdr",
+    "agent-interop"
+  ],
   "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. V1: Pi / OpenCode native adapters + shared stdio MCP server for Claude Code / Codex / AGY.",
-  "files": ["PROTOCOL.md", "README.md", "CHANGELOG.md", "docs/mcp-wiring.md", "dist/", "src/", "scripts/mcp-probe.mjs"],
+  "files": [
+    "PROTOCOL.md",
+    "README.md",
+    "CHANGELOG.md",
+    "docs/mcp-wiring.md",
+    "dist/",
+    "src/",
+    "scripts/mcp-probe.mjs"
+  ],
   "type": "module",
-  "private": true,
   "license": "MIT",
   "author": "LZHcode1986",
   "repository": {
@@ -36,8 +47,12 @@
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "typebox": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.2",
