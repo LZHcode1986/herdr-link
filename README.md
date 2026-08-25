@@ -53,6 +53,18 @@ Herdr Link does not decide what agents should do, and it does not create, schedu
 
 ## Installation
 
+### Herdr plugin (operator tooling)
+
+herdr-link is listed on the official [Herdr plugin marketplace](https://herdr.dev/plugins/). Installing it as a Herdr plugin gives you an operator-facing `doctor` action for troubleshooting Link setups in any pane:
+
+```bash
+herdr plugin install LZHcode1986/herdr-link
+herdr plugin action invoke herdr-link.doctor   # env, self identity, same-workspace peers
+```
+
+The plugin action is read-only diagnostics; the Agent-facing protocol surface ships separately per runtime below.
+
+
 ### Pi (native extension)
 
 ```bash

@@ -1,0 +1,16 @@
+id = "herdr-link"
+name = "Herdr Link"
+version = "0.2.1"
+min_herdr_version = "0.7.0"
+description = "Cross-agent messaging for Herdr sessions: same-workspace agents discover each other and exchange herdr-link/1 envelopes from Pi, OpenCode, Claude Code, Codex, and AGY without any Skill, AGENTS.md, or manual setup."
+platforms = ["linux", "macos", "windows"]
+
+# Operator-facing diagnostics only. The Agent-facing protocol surface
+# (herdr_link gateway + Tier 1 tools) ships inside the npm package and the
+# runtime adapters; this plugin action never touches it and only calls
+# read-only Herdr CLI verbs.
+[[actions]]
+id = "doctor"
+title = "Herdr Link doctor"
+contexts = ["workspace"]
+command = ["node", "scripts/plugin-action.mjs", "doctor"]
