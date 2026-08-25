@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -747,6 +747,27 @@ test("spawned MCP server over real stdio", async (t) => {
 
         server.endInput();
         assert.equal(await server.waitForExit(), 0);
+      } finally {
+        server.destroy();
+      }
+    },
+  );
+
+  await t.test(
+    "spawned through an installed-bin style symlink: entry detection survives the realpath mismatch",
+    async () => {
+      const linkPath = join(scratch, "herdr-link-bin");
+      symlinkSync(SERVER_ENTRY, linkPath);
+      const server = new McpServerProcess([...flags, linkPath], herdrFreeEnv());
+      try {
+        const initialized = await server.request({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: "2025-06-18" },
+        });
+        const initResult = initialized.result as { serverInfo?: { name?: string } };
+        assert.equal(initResult.serverInfo?.name, "herdr-link");
       } finally {
         server.destroy();
       }

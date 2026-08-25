@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 // src/mcp.ts
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 // src/herdr.ts
@@ -444,7 +445,7 @@ async function closeAgentPane(agentName) {
 
 // src/mcp.ts
 var MCP_SERVER_NAME = "herdr-link";
-var MCP_SERVER_VERSION = "0.1.0";
+var MCP_SERVER_VERSION = "0.2.0";
 var MCP_PROTOCOL_VERSION = "2025-06-18";
 var TOOLS_LIST_CHANGED = "notifications/tools/list_changed";
 var PARSE_ERROR = -32700;
@@ -767,7 +768,7 @@ function invokedDirectly() {
   const entry = process.argv[1];
   if (!entry) return false;
   try {
-    return import.meta.url === pathToFileURL(entry).href;
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
   } catch {
     return false;
   }

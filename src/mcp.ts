@@ -17,6 +17,7 @@
  * actions (`{"action":"send","arguments":{...}}`). No daemon, no global
  * state: activation lives and dies with the connection.
  */
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { closeAgentPane, ensureSelfName, listPeers, sendMessage } from "./herdr.ts";
@@ -34,7 +35,7 @@ import {
 
 export const MCP_SERVER_NAME = "herdr-link";
 /** Keep in sync with package.json "version" (serverInfo is informational). */
-export const MCP_SERVER_VERSION = "0.1.0";
+export const MCP_SERVER_VERSION = "0.2.0";
 /** Fallback protocol version advertised when the client sends none. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
@@ -561,7 +562,10 @@ function invokedDirectly(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;
   try {
-    return import.meta.url === pathToFileURL(entry).href;
+    // npm installs bins as symlinks while Node resolves module URLs to their
+    // real paths; argv[1] must be resolved identically before comparing or
+    // every spawn through an installed bin silently no-ops.
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
   } catch {
     return false;
   }
