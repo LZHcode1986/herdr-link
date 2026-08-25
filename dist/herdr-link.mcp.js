@@ -445,7 +445,7 @@ async function closeAgentPane(agentName) {
 
 // src/mcp.ts
 var MCP_SERVER_NAME = "herdr-link";
-var MCP_SERVER_VERSION = "0.2.0";
+var MCP_SERVER_VERSION = "0.2.1";
 var MCP_PROTOCOL_VERSION = "2025-06-18";
 var TOOLS_LIST_CHANGED = "notifications/tools/list_changed";
 var PARSE_ERROR = -32700;
