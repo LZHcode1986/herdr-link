@@ -278,17 +278,34 @@ function generateAgentName() {
 function stableName(record) {
   return record.live === false ? void 0 : record.name;
 }
+var SELF_PROBE_ATTEMPTS = 3;
+var SELF_PROBE_DELAY_MS = 100;
+var sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fetchSelfRecord(pane) {
-  try {
-    return await runFor(["agent", "get", pane], "SELF_UNNAMED");
-  } catch (error) {
-    if (error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND") {
-      throw selfUnnamed(errorDetail(error));
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await runFor(["agent", "get", pane], "SELF_UNNAMED");
+    } catch (error) {
+      const notDetectedYet = error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND";
+      if (notDetectedYet && attempt < SELF_PROBE_ATTEMPTS) {
+        await sleepMs(SELF_PROBE_DELAY_MS);
+        continue;
+      }
+      if (notDetectedYet) {
+        throw selfUnnamed(errorDetail(error));
+      }
+      throw error;
     }
-    throw error;
   }
 }
-async function ensureSelfName() {
+var bootstrapInFlight;
+function ensureSelfName() {
+  bootstrapInFlight ??= ensureSelfNameFlow().finally(() => {
+    bootstrapInFlight = void 0;
+  });
+  return bootstrapInFlight;
+}
+async function ensureSelfNameFlow() {
   assertHerdrEnvironment();
   const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
@@ -329,7 +346,7 @@ async function getSelfContext() {
   let response = await fetchSelfRecord(pane);
   let record = readLiveRecord(response);
   if (!stableName(record) && record.live !== false) {
-    await establishSelfName(pane, record);
+    await ensureSelfName();
     response = await fetchSelfRecord(pane);
     record = readLiveRecord(response);
   }

@@ -7,7 +7,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import piExtension from "../src/pi.ts";
-import { setHerdrRunnerForTests, type HerdrRunner } from "../src/herdr.ts";
+import {
+  resetSelfBootstrapForTests,
+  setHerdrRunnerForTests,
+  type HerdrRunner,
+} from "../src/herdr.ts";
 import { COMMUNICATION_CONTRACT, HerdrLinkError } from "../src/protocol.ts";
 
 const HERDR_ENV_KEYS = ["HERDR_ENV", "HERDR_BIN_PATH", "HERDR_PANE_ID"] as const;
@@ -118,6 +122,7 @@ async function withHerdrMock(
     return { stdout: JSON.stringify(response) ?? "", stderr: "" };
   };
   setHerdrRunnerForTests(runner);
+  resetSelfBootstrapForTests(); // drop any stale flight born outside this mock
   try {
     await callback(calls);
   } finally {
@@ -162,6 +167,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
 
     // …and session_start demotes Tier 1 out of the active set while keeping
     // host defaults and the gateway: the model sees only the tiny gateway.
+    resetSelfBootstrapForTests();
     dispatch({ type: "session_start", reason: "startup" });
     assert.equal(activeToolCalls.length, 1);
     assert.deepEqual(activeToolCalls[0], ["read", "bash", "herdr_link"]);
@@ -196,6 +202,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     useHerdrEnv();
     const { pi, tools, activeToolCalls, dispatch } = fakePi();
     piExtension(pi);
+    resetSelfBootstrapForTests();
     dispatch({ type: "session_start", reason: "startup" });
 
     const cliCalls: CliCall[] = [];
@@ -259,6 +266,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     assert.equal(injected.trim(), COMMUNICATION_CONTRACT);
 
     // New session returns to dormant: activation is session-scoped only.
+    resetSelfBootstrapForTests();
     dispatch({ type: "session_start", reason: "new" });
     assert.equal(dispatch(event), undefined);
     assert.ok(handlers.has("before_agent_start"));

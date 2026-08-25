@@ -249,16 +249,33 @@ function stableName(record: LiveRecordFields): string | undefined {
   return record.live === false ? undefined : record.name;
 }
 
+/** Bounded detection-readiness budget: Herdr may not yet have noticed a
+ * freshly launched pane occupant when the adapter boots (PROTOCOL.md §6.3). */
+const SELF_PROBE_ATTEMPTS = 3;
+const SELF_PROBE_DELAY_MS = 100;
+
+const sleepMs = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function fetchSelfRecord(pane: string): Promise<unknown> {
-  try {
-    return await runFor(["agent", "get", pane], "SELF_UNNAMED");
-  } catch (error) {
-    // The caller pane is not (yet) a named agent target; keep self-resolution
-    // failures in the SELF_UNNAMED vocabulary.
-    if (error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND") {
-      throw selfUnnamed(errorDetail(error));
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await runFor(["agent", "get", pane], "SELF_UNNAMED");
+    } catch (error) {
+      // The caller pane is not (yet) a named agent target; keep self-resolution
+      // failures in the SELF_UNNAMED vocabulary. A short bounded readiness retry
+      // covers the launch race where detection has not completed yet; transport
+      // and other classified failures are never retried.
+      const notDetectedYet =
+        error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND";
+      if (notDetectedYet && attempt < SELF_PROBE_ATTEMPTS) {
+        await sleepMs(SELF_PROBE_DELAY_MS);
+        continue;
+      }
+      if (notDetectedYet) {
+        throw selfUnnamed(errorDetail(error));
+      }
+      throw error;
     }
-    throw error;
   }
 }
 
@@ -270,14 +287,33 @@ async function fetchSelfRecord(pane: string): Promise<unknown> {
  *   never rewritten.
  * - A live-but-unnamed occupant receives one generated `hl-*` name via
  *   `agent rename`, confirmed by re-reading the authoritative live record.
- * - `agent_name_taken` regenerates within a bounded attempt budget (the only
- *   internal retry allowed); any other failure collapses to SELF_UNNAMED with
- *   a fixed sanitized detail, except NOT_IN_HERDR which keeps its own code.
- * - Nothing is persisted here and no module state is kept between calls:
- *   every invocation re-resolves the live record fresh; Herdr remains the
- *   lifecycle authority.
+ * - Undetected occupants get a tiny bounded readiness retry inside the initial
+ *   probe; `agent_name_taken` regenerates within a bounded collision budget —
+ *   these two budgets are the only internal retries. Any other failure
+ *   collapses to SELF_UNNAMED with a fixed sanitized detail, except
+ *   NOT_IN_HERDR which keeps its own code.
+ * - Concurrent callers share one in-flight sequence, so a startup bootstrap
+ *   can never race a communication-path fallback into double-renaming. The
+ *   guard clears on settle: nothing is cached or persisted between calls,
+ *   and Herdr remains the lifecycle authority.
  */
-export async function ensureSelfName(): Promise<string> {
+let bootstrapInFlight: Promise<string> | undefined;
+
+export function ensureSelfName(): Promise<string> {
+  bootstrapInFlight ??= ensureSelfNameFlow().finally(() => {
+    bootstrapInFlight = undefined;
+  });
+  return bootstrapInFlight;
+}
+
+/** @internal Test seam only: clears the in-flight bootstrap guard so
+ * sequential subtests start from a clean slate. Production never needs this —
+ * the guard clears itself on settle. */
+export function resetSelfBootstrapForTests(): void {
+  bootstrapInFlight = undefined;
+}
+
+async function ensureSelfNameFlow(): Promise<string> {
   assertHerdrEnvironment();
   const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
@@ -334,8 +370,10 @@ export async function getSelfContext(): Promise<AgentContext> {
   let response = await fetchSelfRecord(pane);
   let record = readLiveRecord(response);
   if (!stableName(record) && record.live !== false) {
-    // Reuses the fetched record — no extra probe before the rename.
-    await establishSelfName(pane, record);
+    // Route through the guarded entry: a concurrent startup bootstrap is
+    // awaited, never duplicated (single rename per moment); state is then
+    // re-read fresh below after it settles.
+    await ensureSelfName();
     response = await fetchSelfRecord(pane);
     record = readLiveRecord(response);
   }

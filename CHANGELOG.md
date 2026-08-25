@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **Self identity bootstrap** (PROTOCOL.md §6.3): when the current pane occupant is recognized by Herdr but has no valid Agent Name, adapters run `ensureSelfName()` — once at adapter startup and as a fallback inside every communication path — to assign a generated `hl-<hex>` name via `agent rename`, confirmed by re-reading the authoritative live record. Existing valid names are never rewritten; collisions (`agent_name_taken`) regenerate within a bounded 3-attempt budget; nothing is persisted (Herdr remains the lifecycle authority).
+- **Self identity bootstrap** (PROTOCOL.md §6.3): when the current pane occupant is recognized by Herdr but has no valid Agent Name, adapters run `ensureSelfName()` — once at adapter startup and as a fallback inside every communication path — to assign a generated `hl-<hex>` name via `agent rename`, confirmed by re-reading the authoritative live record. Existing valid names are never rewritten; collisions (`agent_name_taken`) regenerate within a bounded 3-attempt budget; the initial probe carries an equally small detection-readiness retry for freshly launched occupants; concurrent bootstraps coalesce into one rename sequence; nothing is persisted (Herdr remains the lifecycle authority).
 
 ### Changed
 
