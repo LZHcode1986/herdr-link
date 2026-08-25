@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 // src/mcp.ts
 import { pathToFileURL } from "node:url";
 
