@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 // src/herdr.ts
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
@@ -35,7 +36,7 @@ var HerdrLinkError = class extends Error {
 };
 var AGENT_ERROR_DETAILS = {
   NOT_IN_HERDR: "Herdr environment is unavailable",
-  SELF_UNNAMED: "current Agent has no stable live name",
+  SELF_UNNAMED: "Herdr Link could not establish a stable Agent Name",
   PEER_NOT_FOUND: "target agent is not a live peer",
   SEND_FAILED: "Herdr did not accept message delivery",
   CLOSE_FAILED: "Herdr pane close failed"
@@ -265,27 +266,79 @@ function readStatus(value) {
 function isExcludedEntry(value) {
   return agentRecord(value)?.live === false;
 }
+var GENERATED_NAME_PREFIX = "hl-";
+var MAX_GENERATED_NAME_ATTEMPTS = 3;
+var SELF_BOOTSTRAP_FAILED_DETAIL = "Herdr Link could not establish a stable Agent Name";
+function selfUnnamed(detail) {
+  return new HerdrLinkError("SELF_UNNAMED", detail ?? SELF_BOOTSTRAP_FAILED_DETAIL);
+}
+function generateAgentName() {
+  return `${GENERATED_NAME_PREFIX}${randomBytes(4).toString("hex")}`;
+}
+function stableName(record) {
+  return record.live === false ? void 0 : record.name;
+}
+async function fetchSelfRecord(pane) {
+  try {
+    return await runFor(["agent", "get", pane], "SELF_UNNAMED");
+  } catch (error) {
+    if (error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND") {
+      throw selfUnnamed(errorDetail(error));
+    }
+    throw error;
+  }
+}
+async function ensureSelfName() {
+  assertHerdrEnvironment();
+  const pane = process.env.HERDR_PANE_ID;
+  if (!pane) {
+    throw selfUnnamed("HERDR_PANE_ID is missing");
+  }
+  return establishSelfName(pane, readLiveRecord(await fetchSelfRecord(pane)));
+}
+async function establishSelfName(pane, record) {
+  const existing = stableName(record);
+  if (existing) return existing;
+  if (record.live === false) {
+    throw selfUnnamed();
+  }
+  for (let attempt = 0; attempt < MAX_GENERATED_NAME_ATTEMPTS; attempt += 1) {
+    try {
+      await runHerdr(["agent", "rename", pane, generateAgentName()]);
+    } catch (error) {
+      if (error instanceof HerdrCliError && error.cliCode === "agent_name_taken") {
+        continue;
+      }
+      if (error instanceof HerdrLinkError && error.code === "NOT_IN_HERDR") {
+        throw error;
+      }
+      throw selfUnnamed();
+    }
+    const confirmed = stableName(readLiveRecord(await fetchSelfRecord(pane)));
+    if (confirmed) return confirmed;
+    throw selfUnnamed();
+  }
+  throw selfUnnamed();
+}
 async function getSelfContext() {
   assertHerdrEnvironment();
   const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
-    throw new HerdrLinkError("SELF_UNNAMED", "HERDR_PANE_ID is missing");
+    throw selfUnnamed("HERDR_PANE_ID is missing");
   }
-  let response;
-  try {
-    response = await runFor(["agent", "get", pane], "SELF_UNNAMED");
-  } catch (error) {
-    if (error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND") {
-      throw new HerdrLinkError("SELF_UNNAMED", errorDetail(error));
-    }
-    throw error;
+  let response = await fetchSelfRecord(pane);
+  let record = readLiveRecord(response);
+  if (!stableName(record) && record.live !== false) {
+    await establishSelfName(pane, record);
+    response = await fetchSelfRecord(pane);
+    record = readLiveRecord(response);
   }
-  const record = readLiveRecord(response);
-  if (record.live === false || !record.name) {
-    throw new HerdrLinkError("SELF_UNNAMED", "current Herdr agent has no valid name");
+  const name = stableName(record);
+  if (!name) {
+    throw selfUnnamed("current Herdr agent has no valid name");
   }
   return {
-    name: record.name,
+    name,
     workspace_id: record.workspace_id ?? "",
     pane_id: record.pane_id ?? pane,
     agent_status: readStatus(response)
@@ -703,6 +756,8 @@ function invokedDirectly() {
   }
 }
 if (invokedDirectly()) {
+  void ensureSelfName().catch(() => {
+  });
   await runStdioServer(createRequestHandler());
 }
 export {

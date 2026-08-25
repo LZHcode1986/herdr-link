@@ -30,7 +30,7 @@
  */
 import { tool, type Plugin } from "@opencode-ai/plugin";
 
-import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
+import { closeAgentPane, ensureSelfName, listPeers, sendMessage } from "./herdr.ts";
 import {
   COMMUNICATION_CONTRACT,
   HERDR_LINK_GATEWAY,
@@ -75,6 +75,11 @@ export const herdrLinkPlugin: Plugin = async () => {
   if (!isHerdrEnvironment()) {
     return {};
   }
+
+  // Self identity bootstrap (PROTOCOL.md §6.3): fire-and-forget so plugin
+  // startup never blocks or fails on Herdr IO; gateway actions fall back
+  // through getSelfContext(). Failures surface later as SELF_UNNAMED.
+  void ensureSelfName().catch(() => {});
 
   // Per-runtime-session activation set. Ephemeral by design: in-memory only,
   // scoped to this plugin instance, never persisted, never shared across

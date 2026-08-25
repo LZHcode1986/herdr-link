@@ -257,7 +257,8 @@ printf '%s\n%s\n%s\n%s\n' \
 
 - 工具失败是本地 tool failure：`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`，一律 `isError:true` 文本返回，进程不崩溃、不自动重试、不 fallback；
 - activation 是本 stdio 连接内的内存状态：连接断开即回到 dormant，不持久化、不跨连接共享；JSON-RPC 保留错误码（-32700 等）只用于 transport 层，五个 Link 错误码永不映射其上；
-- server 只调用 `agent get` / `agent list` / `agent prompt` / `pane close` 四个 CLI 面，argv 数组执行，无 shell；每次通信调用实时解析 live identity/workspace 并强制 same-workspace guard；
+- server 只调用 `agent get` / `agent list` / `agent prompt` / `pane close`，外加仅限 self identity bootstrap（PROTOCOL.md §6.3，目标只能是当前 pane 的未命名 occupant）的 `agent rename <self-pane>`，共五个 CLI 面，argv 数组执行，无 shell；每次通信调用实时解析 live identity/workspace 并强制 same-workspace guard；
+- server 启动时执行一次 `ensureSelfName()`（fire-and-forget，失败静默、稍后以 `SELF_UNNAMED` 呈现）：手动启动且未命名的 agent 无需人工 rename 即可成为可发现 peer；
 - 不提供 agent 创建/调度/回收、workspace/topology 控制等任何 Non-goals 能力；worker 生命周期仍由调用方决定；正常协作不依赖外部 `AGENTS.md` / Skill 补充 Contract。
 
 ## 7. 已知坑（Codex/AGY 真机实测）

@@ -27,7 +27,7 @@
 import type { ExtensionAPI, ToolExecutionMode } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
+import { closeAgentPane, ensureSelfName, listPeers, sendMessage } from "./herdr.ts";
 import { COMMUNICATION_CONTRACT, formatAgentFacingError } from "./protocol.ts";
 
 const TIER1_TOOL_NAMES = ["herdr_link_peers", "herdr_link_send", "herdr_link_close"] as const;
@@ -155,6 +155,12 @@ export default function (pi: ExtensionAPI): void {
     // Resetting `activated` keeps activation scoped to the current session.
     activated = false;
     pi.setActiveTools(pi.getActiveTools().filter((name) => !TIER1_TOOL_SET.has(name)));
+
+    // Self identity bootstrap (PROTOCOL.md §6.3), once per runtime session:
+    // fire-and-forget so session start never blocks or fails on Herdr IO;
+    // communication paths fall back through getSelfContext(). Failures
+    // surface later as SELF_UNNAMED.
+    void ensureSelfName().catch(() => {});
   });
 
   pi.on("before_agent_start", (event) => {

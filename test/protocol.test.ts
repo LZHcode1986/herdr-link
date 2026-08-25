@@ -310,6 +310,6 @@ test("HerdrLinkError carries its code and a readable message", () => {
 
 test("formatAgentFacingError redacts raw Herdr diagnostics", () => {
   const error = new HerdrLinkError("SELF_UNNAMED", "agent target wH:p1 not found");
-  assert.equal(formatAgentFacingError(error, "SELF_UNNAMED"), "SELF_UNNAMED: current Agent has no stable live name");
+  assert.equal(formatAgentFacingError(error, "SELF_UNNAMED"), "SELF_UNNAMED: Herdr Link could not establish a stable Agent Name");
   assert.equal(formatAgentFacingError(new Error("pane wH:p1 failed"), "CLOSE_FAILED"), "CLOSE_FAILED: Herdr pane close failed");
 });

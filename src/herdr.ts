@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   AGENT_ERROR_DETAILS,
   buildEnvelope,
@@ -221,36 +222,130 @@ function isExcludedEntry(value: unknown): boolean {
   return agentRecord(value)?.live === false;
 }
 
+/* ------------------------------------------------------------------ *
+ * Self identity bootstrap (PROTOCOL.md §6.3)
+ * ------------------------------------------------------------------ */
+
+const GENERATED_NAME_PREFIX = "hl-";
+
+/** Total rename attempts per bootstrap; collisions regenerate within it. */
+const MAX_GENERATED_NAME_ATTEMPTS = 3;
+
+/** Fixed sanitized detail; raw pane ids and CLI diagnostics stay internal. */
+const SELF_BOOTSTRAP_FAILED_DETAIL =
+  "Herdr Link could not establish a stable Agent Name";
+
+function selfUnnamed(detail?: string): HerdrLinkError {
+  return new HerdrLinkError("SELF_UNNAMED", detail ?? SELF_BOOTSTRAP_FAILED_DETAIL);
+}
+
+/** Generated Link-owned Agent Name (`hl-` + hex), valid per `[a-z][a-z0-9_-]{0,31}`. */
+function generateAgentName(): string {
+  return `${GENERATED_NAME_PREFIX}${randomBytes(4).toString("hex")}`;
+}
+
+/** The occupant's stable Agent Name, or undefined when absent or not live. */
+function stableName(record: LiveRecordFields): string | undefined {
+  return record.live === false ? undefined : record.name;
+}
+
+async function fetchSelfRecord(pane: string): Promise<unknown> {
+  try {
+    return await runFor(["agent", "get", pane], "SELF_UNNAMED");
+  } catch (error) {
+    // The caller pane is not (yet) a named agent target; keep self-resolution
+    // failures in the SELF_UNNAMED vocabulary.
+    if (error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND") {
+      throw selfUnnamed(errorDetail(error));
+    }
+    throw error;
+  }
+}
+
+/**
+ * Self identity bootstrap (PROTOCOL.md §6.3): guarantees the current pane
+ * occupant has a stable Agent Name and returns it.
+ *
+ * - A validly-named occupant is returned unchanged; user-assigned names are
+ *   never rewritten.
+ * - A live-but-unnamed occupant receives one generated `hl-*` name via
+ *   `agent rename`, confirmed by re-reading the authoritative live record.
+ * - `agent_name_taken` regenerates within a bounded attempt budget (the only
+ *   internal retry allowed); any other failure collapses to SELF_UNNAMED with
+ *   a fixed sanitized detail, except NOT_IN_HERDR which keeps its own code.
+ * - Nothing is persisted here and no module state is kept between calls:
+ *   every invocation re-resolves the live record fresh; Herdr remains the
+ *   lifecycle authority.
+ */
+export async function ensureSelfName(): Promise<string> {
+  assertHerdrEnvironment();
+  const pane = process.env.HERDR_PANE_ID;
+  if (!pane) {
+    throw selfUnnamed("HERDR_PANE_ID is missing");
+  }
+  return establishSelfName(pane, readLiveRecord(await fetchSelfRecord(pane)));
+}
+
+/** Core §6.3 sequence for an already-fetched live record of `pane`. */
+async function establishSelfName(pane: string, record: LiveRecordFields): Promise<string> {
+  const existing = stableName(record);
+  if (existing) return existing;
+  if (record.live === false) {
+    // Occupant not recognized as live: there is nothing to rename.
+    throw selfUnnamed();
+  }
+
+  for (let attempt = 0; attempt < MAX_GENERATED_NAME_ATTEMPTS; attempt += 1) {
+    try {
+      await runHerdr(["agent", "rename", pane, generateAgentName()]);
+    } catch (error) {
+      if (error instanceof HerdrCliError && error.cliCode === "agent_name_taken") {
+        continue; // collision: regenerate within the bounded budget
+      }
+      if (error instanceof HerdrLinkError && error.code === "NOT_IN_HERDR") {
+        throw error; // environment/transport failures keep their classified code
+      }
+      throw selfUnnamed();
+    }
+    // Confirm against a fresh authoritative read; never trust the rename echo.
+    const confirmed = stableName(readLiveRecord(await fetchSelfRecord(pane)));
+    if (confirmed) return confirmed;
+    throw selfUnnamed();
+  }
+  // Collision budget exhausted without a confirmed name.
+  throw selfUnnamed();
+}
+
 /**
  * Resolves the caller's own live context via `HERDR_PANE_ID -> agent get`.
  * Fresh on every call: name/workspace_id/pane_id/agent_status come from the
- * current live record, never from cache or ambient environment.
+ * current live record, never from cache or ambient environment. A live but
+ * unnamed occupant triggers the §6.3 self-bootstrap fallback, covering the
+ * window where an adapter's init-time ensureSelfName() raced Herdr's
+ * detection; context is then rebuilt from a fresh authoritative read.
  */
 export async function getSelfContext(): Promise<AgentContext> {
   assertHerdrEnvironment();
   const pane = process.env.HERDR_PANE_ID;
   if (!pane) {
-    throw new HerdrLinkError("SELF_UNNAMED", "HERDR_PANE_ID is missing");
+    throw selfUnnamed("HERDR_PANE_ID is missing");
   }
 
-  let response: unknown;
-  try {
-    response = await runFor(["agent", "get", pane], "SELF_UNNAMED");
-  } catch (error) {
-    // The caller pane is not a named agent target; keep self-resolution
-    // failures in the SELF_UNNAMED vocabulary.
-    if (error instanceof HerdrLinkError && error.code === "PEER_NOT_FOUND") {
-      throw new HerdrLinkError("SELF_UNNAMED", errorDetail(error));
-    }
-    throw error;
+  let response = await fetchSelfRecord(pane);
+  let record = readLiveRecord(response);
+  if (!stableName(record) && record.live !== false) {
+    // Reuses the fetched record — no extra probe before the rename.
+    await establishSelfName(pane, record);
+    response = await fetchSelfRecord(pane);
+    record = readLiveRecord(response);
   }
 
-  const record = readLiveRecord(response);
-  if (record.live === false || !record.name) {
-    throw new HerdrLinkError("SELF_UNNAMED", "current Herdr agent has no valid name");
+  const name = stableName(record);
+  if (!name) {
+    throw selfUnnamed("current Herdr agent has no valid name");
   }
   return {
-    name: record.name,
+    name,
     workspace_id: record.workspace_id ?? "",
     pane_id: record.pane_id ?? pane,
     agent_status: readStatus(response),

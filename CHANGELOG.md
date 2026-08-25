@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Self identity bootstrap** (PROTOCOL.md §6.3): when the current pane occupant is recognized by Herdr but has no valid Agent Name, adapters run `ensureSelfName()` — once at adapter startup and as a fallback inside every communication path — to assign a generated `hl-<hex>` name via `agent rename`, confirmed by re-reading the authoritative live record. Existing valid names are never rewritten; collisions (`agent_name_taken`) regenerate within a bounded 3-attempt budget; nothing is persisted (Herdr remains the lifecycle authority).
+
+### Changed
+
+- PROTOCOL.md §6.2/§7/§8/§9: identity readiness now permits the scoped internal bootstrap; `SELF_UNNAMED` narrowed to "Link attempted but failed to establish a stable Agent Name"; `agent rename` moved from the blanket command forbidden list to a §6.3-only scoped exception (never model-facing); Non-goals exclude general Agent Name management while allowing the one-shot self bootstrap.
+
 ## [0.1.0] - 2026-08-25
 
 First public release of Herdr Link: an on-demand cross-agent interoperability layer running inside Herdr sessions.

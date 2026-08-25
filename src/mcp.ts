@@ -19,7 +19,7 @@
  */
 import { pathToFileURL } from "node:url";
 
-import { closeAgentPane, listPeers, sendMessage } from "./herdr.ts";
+import { closeAgentPane, ensureSelfName, listPeers, sendMessage } from "./herdr.ts";
 import {
   COMMUNICATION_CONTRACT,
   HERDR_LINK_GATEWAY,
@@ -568,5 +568,11 @@ function invokedDirectly(): boolean {
 }
 
 if (invokedDirectly()) {
+  // Self identity bootstrap (PROTOCOL.md §6.3): fire-and-forget before serving
+  // requests so a manually launched unnamed agent becomes discoverable ASAP;
+  // communication calls still fall back through getSelfContext(). Nothing may
+  // ever write to stdout here except JSON-RPC frames, so failures stay silent
+  // and surface later as SELF_UNNAMED.
+  void ensureSelfName().catch(() => {});
   await runStdioServer(createRequestHandler());
 }

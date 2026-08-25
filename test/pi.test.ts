@@ -369,7 +369,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       const peers = findTool(tools, "herdr_link_peers");
       await assert.rejects(
         peers.execute("p-err", {}, undefined, undefined, NO_CTX),
-        /SELF_UNNAMED: current Agent has no stable live name/,
+        /SELF_UNNAMED: Herdr Link could not establish a stable Agent Name/,
       );
     });
 

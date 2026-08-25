@@ -107,6 +107,7 @@ The runtime process must be started by Herdr in a managed pane:
 
 - Outside a Herdr pane every adapter is a complete no-op: Pi/OpenCode register nothing, MCP returns an empty tool list.
 - In a Herdr pane while dormant, only the `herdr_link` gateway is visible to the model.
+- **Self identity bootstrap** (PROTOCOL.md §6.3): a manually started agent that is recognized by Herdr but has no valid Agent Name is named automatically with a generated `hl-*` name (`ensureSelfName()` at adapter startup plus a fallback inside every communication path). Existing names are never rewritten, nothing is persisted; if the bootstrap fails the Link errors with `SELF_UNNAMED`.
 - Runtime failures come back as Link errors (`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`).
 
 ## Error model
@@ -114,7 +115,7 @@ The runtime process must be started by Herdr in a managed pane:
 | Code | Meaning |
 |---|---|
 | `NOT_IN_HERDR` | Herdr environment unavailable (missing vars, dead binary, transport failure, invalid JSON) |
-| `SELF_UNNAMED` | Current agent has no stable Agent Name |
+| `SELF_UNNAMED` | Herdr Link attempted to establish a stable Agent Name (self identity bootstrap, PROTOCOL.md §6.3) but failed — occupant not yet detected by Herdr or auto-naming unsuccessful |
 | `PEER_NOT_FOUND` | Target is not a live named peer in the current workspace (nonexistent / invalid name / other workspace — indistinguishable to the model) |
 | `SEND_FAILED` | Herdr did not accept the message prompt although guards passed |
 | `CLOSE_FAILED` | Target resolved to a pane but Herdr's pane close failed |

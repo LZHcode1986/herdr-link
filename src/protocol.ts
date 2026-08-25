@@ -118,7 +118,7 @@ export class HerdrLinkError extends Error {
 /** Stable Agent-facing details; raw Herdr diagnostics remain internal to the error object. */
 export const AGENT_ERROR_DETAILS: Record<LinkErrorCode, string> = {
   NOT_IN_HERDR: "Herdr environment is unavailable",
-  SELF_UNNAMED: "current Agent has no stable live name",
+  SELF_UNNAMED: "Herdr Link could not establish a stable Agent Name",
   PEER_NOT_FOUND: "target agent is not a live peer",
   SEND_FAILED: "Herdr did not accept message delivery",
   CLOSE_FAILED: "Herdr pane close failed",

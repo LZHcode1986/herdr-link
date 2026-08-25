@@ -107,6 +107,7 @@ MCP 同样是惰性呈现：非 Herdr 环境 `tools/list` 返回空集；Herdr m
 
 - 非 Herdr managed pane 中所有 Adapter 均为完全 no-op：Pi/OpenCode 不注册任何工具，MCP 返回空工具集；
 - Herdr 环境 dormant 态下，模型侧只有 `herdr_link` gateway 可见；
+- **Self identity bootstrap**（PROTOCOL.md §6.3）：用户手动启动、已被 Herdr 识别但尚无合法 Agent Name 的 agent，会被自动赋一个生成的 `hl-*` 名字（Adapter 启动时执行一次 `ensureSelfName()`，通信路径内另有 fallback）。已有名字绝不改写、不持久化；bootstrap 失败时 Link 以 `SELF_UNNAMED` 报错；
 - 运行期失败通过 Link error 返回（`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`）。
 
 ## 错误模型
@@ -114,7 +115,7 @@ MCP 同样是惰性呈现：非 Herdr 环境 `tools/list` 返回空集；Herdr m
 | Code | 含义 |
 |---|---|
 | `NOT_IN_HERDR` | Herdr 环境不可用（变量缺失、binary 失效/被删除、transport 失败、非法 JSON） |
-| `SELF_UNNAMED` | 当前 Agent 没有稳定 Agent Name |
+| `SELF_UNNAMED` | Herdr Link 已尝试建立稳定 Agent Name（self identity bootstrap，PROTOCOL.md §6.3）但失败——occupant 尚未被 Herdr 检测或自动命名未成功 |
 | `PEER_NOT_FOUND` | 目标不是当前 workspace 内的 live named peer（不存在/非法名/其他 workspace——对模型不可区分） |
 | `SEND_FAILED` | guard 通过后 Herdr 未接受 message prompt |
 | `CLOSE_FAILED` | 目标已解析到 pane，但 Herdr pane close 失败 |

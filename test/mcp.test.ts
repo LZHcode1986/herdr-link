@@ -395,7 +395,7 @@ test("MCP server request handler", async (t) => {
     const peers = await handler({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "herdr_link_peers" } });
     const peersResult = peers?.result as { content: Array<{ text: string }>; isError?: boolean };
     assert.equal(peersResult.isError, true);
-    assert.equal(peersResult.content[0]!.text, "SELF_UNNAMED: current Agent has no stable live name");
+    assert.equal(peersResult.content[0]!.text, "SELF_UNNAMED: Herdr Link could not establish a stable Agent Name");
 
     const sent = await handler({
       jsonrpc: "2.0",

@@ -4,6 +4,7 @@ import {
   assertHerdrEnvironment,
   attachCliOutput,
   closeAgentPane,
+  ensureSelfName,
   getAgentContext,
   getSelf,
   getSelfContext,
@@ -386,7 +387,7 @@ test("Herdr control layer", async (t) => {
     });
   });
 
-  await t.test("returns SELF_UNNAMED when self identity cannot be resolved", async () => {
+  await t.test("returns SELF_UNNAMED when bootstrap cannot establish a name", async () => {
     await withMock(async (_file, args) => {
       if (args[0] === "agent" && args[1] === "get" && args[2] === "blank-name") {
         return { result: { agent: { workspace_id: "ws-1", pane_id: "w1:pX" } } };
@@ -397,14 +398,192 @@ test("Herdr control layer", async (t) => {
       await assert.rejects(getSelfContext(), matchesCode("SELF_UNNAMED"));
       assert.equal(calls.length, 0);
 
+      // Live-but-unnamed occupant: the §6.3 bootstrap runs (rename + confirm)
+      // and still finds no valid name afterwards → fails closed SELF_UNNAMED.
+      // Sequence: agent get, agent rename, confirm agent get.
       process.env.HERDR_PANE_ID = "self-pane";
       await assert.rejects(getSelfContext(), matchesCode("SELF_UNNAMED"));
-      assert.equal(calls.length, 1);
+      assert.equal(calls.length, 3);
+      assert.deepEqual(calls[1].args.slice(0, 3), ["agent", "rename", "self-pane"]);
+      assert.match(String(calls[1].args[3]), /^hl-[0-9a-f]{8}$/);
 
       // A named-agent lookup against the caller pane keeps SELF_UNNAMED semantics.
       process.env.HERDR_PANE_ID = "blank-name";
       await assert.rejects(getSelfContext(), matchesCode("SELF_UNNAMED"));
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 6);
+    });
+  });
+
+  await t.test("ensureSelfName keeps an existing valid Agent Name untouched", async () => {
+    await withMock((_file, args) => {
+      if (args[0] === "agent" && args[1] === "get") {
+        return { result: { agent: { name: "alice", workspace_id: "ws-1", pane_id: "self-pane", agent_status: "idle" } } };
+      }
+      return { ok: true };
+    }, async (calls) => {
+      assert.equal(await ensureSelfName(), "alice");
+      // Exactly one probe; no rename is ever issued for a named occupant.
+      assert.deepEqual(calls.map((call) => call.args), [["agent", "get", "self-pane"]]);
+    });
+  });
+
+  await t.test("ensureSelfName names a live-but-unnamed occupant and confirms by re-reading", async () => {
+    let liveName = "";
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "rename") {
+        liveName = String(args[3]);
+        return { ok: true };
+      }
+      if (args[0] === "agent" && args[1] === "get") {
+        return { result: { agent: { name: liveName, workspace_id: "ws-1", pane_id: "self-pane", agent_status: "idle" } } };
+      }
+      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+    }, async (calls) => {
+      const name = await ensureSelfName();
+      assert.match(name, /^hl-[0-9a-f]{8}$/);
+      assert.equal(name, liveName);
+      // Sequence: probe get → rename → confirm get.
+      assert.deepEqual(calls.map((call) => call.args[1]), ["get", "rename", "get"]);
+      assert.equal(calls[1].args[2], "self-pane");
+    });
+  });
+
+  await t.test("agent_name_taken regenerates a new name within the bounded budget", async () => {
+    let liveName = "";
+    let renames = 0;
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "rename") {
+        renames += 1;
+        if (renames === 1) throw cliError("agent_name_taken", `name ${String(args[3])} already taken`);
+        liveName = String(args[3]);
+        return { ok: true };
+      }
+      if (args[0] === "agent" && args[1] === "get") {
+        return { result: { agent: { name: liveName, workspace_id: "ws-1", pane_id: "self-pane" } } };
+      }
+      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+    }, async () => {
+      const name = await ensureSelfName();
+      assert.equal(renames, 2);
+      assert.equal(name, liveName);
+      assert.match(name, /^hl-[0-9a-f]{8}$/);
+    });
+  });
+
+  await t.test("exhausting the collision budget fails closed as SELF_UNNAMED", async () => {
+    await withMock((_file, args) => {
+      if (args[0] === "agent" && args[1] === "rename") {
+        throw cliError("agent_name_taken", `name ${String(args[3])} already taken`);
+      }
+      return { result: { agent: { name: "", workspace_id: "ws-1", pane_id: "self-pane" } } };
+    }, async (calls) => {
+      await assert.rejects(ensureSelfName(), matchesCode("SELF_UNNAMED"));
+      assert.equal(calls.filter((call) => call.args[1] === "rename").length, 3);
+    });
+  });
+
+  await t.test("NOT_IN_HERDR keeps its classified code during bootstrap", async () => {
+    // Transport failure on the initial probe stays NOT_IN_HERDR (no rename yet).
+    await withMock(() => {
+      throw new Error("transport down");
+    }, async () => {
+      await assert.rejects(ensureSelfName(), matchesCode("NOT_IN_HERDR"));
+    });
+
+    // Transport failure on rename likewise passes through un-relabelled.
+    let probed = false;
+    await withMock((_file, args) => {
+      if (!probed && args[1] === "get") {
+        probed = true;
+        return { result: { agent: { name: "", workspace_id: "ws-1", pane_id: "self-pane" } } };
+      }
+      throw new Error("binary vanished mid-bootstrap");
+    }, async () => {
+      await assert.rejects(ensureSelfName(), matchesCode("NOT_IN_HERDR"));
+    });
+  });
+
+  await t.test("bootstrap failures stay sanitized: no pane ids or CLI diagnostics", async () => {
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "rename") {
+        throw cliError("pane_not_found", "no such pane wH:pZ9");
+      }
+      if (args[0] === "agent" && args[1] === "get") {
+        return { result: { agent: { name: "", workspace_id: "ws-1", pane_id: "wH:pZ9" } } };
+      }
+      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+    }, async () => {
+      try {
+        await ensureSelfName();
+        assert.fail("expected SELF_UNNAMED");
+      } catch (error) {
+        assert.ok(error instanceof HerdrLinkError);
+        assert.equal(error.code, "SELF_UNNAMED");
+        assert.equal(error.message, "SELF_UNNAMED: Herdr Link could not establish a stable Agent Name");
+        assert.doesNotMatch(error.message, /wH:p|pane_not_found/);
+        assert.equal(formatAgentFacingError(error, "SELF_UNNAMED"), error.message);
+      }
+    });
+  });
+
+  await t.test("getSelfContext falls back to bootstrap when the occupant is still unnamed", async () => {
+    let liveName = "";
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "rename") {
+        liveName = String(args[3]);
+        return { ok: true };
+      }
+      if (args[0] === "agent" && args[1] === "get") {
+        return { result: { agent: { name: liveName, workspace_id: "ws-1", pane_id: "self-pane", agent_status: "idle" } } };
+      }
+      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+    }, async () => {
+      // Covers the timing window where adapter-init bootstrap raced Herdr's
+      // detection: the first communication call establishes identity itself.
+      const context = await getSelfContext();
+      assert.match(context.name, /^hl-[0-9a-f]{8}$/);
+      assert.equal(context.workspace_id, "ws-1");
+    });
+  });
+
+  await t.test("bootstrapped agent becomes discoverable through another agent's peers", async () => {
+    let selfPaneName = "";
+    await withMock(async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "rename") {
+        selfPaneName = String(args[3]);
+        return { ok: true };
+      }
+      if (args[0] === "agent" && args[1] === "get") {
+        const name = args[2] === "peer-pane" ? "alice" : selfPaneName;
+        return {
+          result: { agent: { name, workspace_id: "ws-1", pane_id: String(args[2]), agent_status: "idle" } },
+        };
+      }
+      if (args[0] === "agent" && args[1] === "list") {
+        return {
+          result: {
+            agents: [
+              { name: "alice", workspace_id: "ws-1", pane_id: "peer-pane", agent_status: "idle" },
+              ...(selfPaneName
+                ? [{ name: selfPaneName, workspace_id: "ws-1", pane_id: "self-pane", agent_status: "working" }]
+                : []),
+            ],
+          },
+        };
+      }
+      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+    }, async () => {
+      // Phase 1: manually launched unnamed agent bootstraps itself.
+      process.env.HERDR_PANE_ID = "self-pane";
+      const generated = await ensureSelfName();
+
+      // Phase 2: another named agent in the same workspace discovers it.
+      process.env.HERDR_PANE_ID = "peer-pane";
+      const directory = await listPeers();
+      assert.ok(
+        directory.peers.some((peer) => peer.name === generated),
+        "the generated name must be discoverable by peers",
+      );
     });
   });
 

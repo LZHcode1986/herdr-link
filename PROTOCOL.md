@@ -192,8 +192,17 @@ Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool s
 - **激活触发仅有两个**：用户显式要求使用 Herdr（explicit Herdr intent），或收到一条 self-describing 的 inbound `herdr-link/1` 投递（§2）。两者都表现为模型调用 gateway；inbound 触发不要求宿主具备 prompt 拦截能力——wrapper 文本本身引导模型调用 gateway。
 - **Once-per-runtime-session**：激活后在当前 runtime session 内保持 active，不因后续用户消息不再提及 Herdr 而回退；新 runtime session 重新从 dormant 开始。activation 是内存中的 session 局部状态，不持久化、不写文件、不进 DB。
 - **Communication readiness**：已激活的当前 pane occupant 还必须拥有合法、稳定的 live Agent Name，才能作为 Envelope 的 `from` 使用 `herdr_link_peers` / `herdr_link_send` / reply。
-- 已激活但当前 occupant 未命名时，通信调用返回 `SELF_UNNAMED`；不猜测名字、不缓存旧名字、不执行 `agent rename`、不自动 retry。
-- Agent Name 的分配、持久性与恢复由 Herdr 和部署/编排层负责；Herdr Link 只在每次通信调用时消费 live identity。显式 `herdr_link_close(agent)` 仍按目标 Agent Name 解析，不把调用方是否已命名作为额外条件。
+- 已激活但当前 occupant 未命名时，Herdr Link 先执行一次内部 self identity bootstrap（§6.3）：为已被 Herdr 识别但尚未命名的当前 occupant 自动生成并绑定一个 Link 前缀的临时 Agent Name 后再正常通信；occupant 尚未被 Herdr 检测或 bootstrap 最终失败时，通信调用返回 `SELF_UNNAMED`。除 §6.3 的碰撞重生外不自动 retry；不猜测名字、不缓存旧名字。
+- 当前 occupant 已有合法 Agent Name 时绝不改名：用户指定名保持不变，仅在无合法名时生成新名。Link 不持久化 Agent Names；名字的生命周期与恢复仍由 Herdr 和部署/编排层负责，Link 只在每次通信调用时消费 live identity。显式 `herdr_link_close(agent)` 仍按目标 Agent Name 解析，不把调用方是否已命名作为额外条件。
+
+### 6.3 Self Identity Bootstrap（Adapter 内部机制）
+
+- 触发时机：Adapter 进入有效 Herdr 环境后执行一次 `ensureSelfName()`；`getSelfContext()` 在每条通信路径上兜底执行同一逻辑，覆盖初始化时尚未完成检测的时序窗口。
+- 执行条件：仅当当前 pane occupant 已被 Herdr 识别（live）且没有合法 Agent Name 时，才对其执行一次 `agent rename <self-pane> <generated>`；已有合法名则原样保留，绝不改写。
+- 生成名规则：Link 专属前缀 `hl-` + 随机十六进制后缀，整体满足 Agent Name 规则 `[a-z][a-z0-9_-]{0,31}`。
+- 确认方式：rename 成功后必须重新读取 authoritative live record 确认命名生效；确认失败即收敛为 `SELF_UNNAMED`。
+- 碰撞预算：CLI 返回 `agent_name_taken` 时重新生成名字并在小预算内重试（最多 3 次尝试）——这是本能力唯一允许的内部自动 retry。
+- 边界：纯 Adapter 内部机制，不向模型暴露任何 rename/claim 工具，Communication Contract 不新增指令；错误文案不得包含 raw pane ID 或 CLI 诊断。
 
 ## 7. 错误模型
 
@@ -202,7 +211,7 @@ V1 定义最小错误语义，全部是本地 tool operation failure，不是跨
 | Code | Meaning |
 |---|---|
 | `NOT_IN_HERDR` | Herdr 环境不可用：环境变量缺失、`HERDR_BIN_PATH` 失效/被删除（spawn ENOENT）、CLI transport 失败、响应非法 JSON |
-| `SELF_UNNAMED` | Adapter 已激活，但当前 live pane occupant 没有合法、稳定的 Agent Name |
+| `SELF_UNNAMED` | Herdr Link 已尝试建立当前 Agent 的稳定 Agent Name（§6.3）但失败——包括 occupant 尚未被 Herdr 检测、自动命名最终未成功两种情况 |
 | `PEER_NOT_FOUND` | 目标不是当前 workspace 内的 live named peer——涵盖名字非法、目标不存在、目标属于其他 workspace、target workspace 未上报；四种情况对模型不可区分（scope privacy） |
 | `SEND_FAILED` | self 与目标均已解析并通过 guard，但 Herdr 未接受 message prompt |
 | `CLOSE_FAILED` | 目标已解析到 authoritative pane，但 Herdr `pane close` 失败 |
@@ -218,11 +227,12 @@ V1 定义最小错误语义，全部是本地 tool operation failure，不是跨
 - Herdr CLI 必须通过 argv 数组执行（`execFile` 或等价无 shell 方式），禁止构造 shell command string。
 - 调用面：`agent get <target>`、`agent list`、`agent prompt <target> <text>`、`pane close <pane_id>`。
 - `agent prompt` 的投递文本是 §2 定义的 self-describing inbound wrapper；除此之外不构造任何额外协议负载。
-- 不使用 `--wait`（V1 无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、`agent start`、`agent rename`、任何 workspace 控制命令。
+- 不使用 `--wait`（V1 无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、`agent start`、任何 workspace 控制命令。
+- `agent rename` 仅限 §6.3 self identity bootstrap 使用：目标只能是当前 pane 中未命名的 live occupant；禁止将其暴露为模型工具、用于任何其他 pane/agent 目标，或在面向模型的文本中提示该动作。
 
 ## 9. Non-goals
 
-V1 不提供：agent 创建/启动/配置/调度、Agent Name 分配/持久化/恢复、自动回收策略、模型选择、workflow/task/stage 状态、业务结果 schema、evidence/receipt/review、持久消息队列、跨机器传输、权限审批系统、离线投递、可靠投递确认、全局权限、跨 session 持久化。
+V1 不提供：agent 创建/启动/配置/调度、通用 Agent Name 管理（分配策略/持久化/恢复——§6.3 的一次性 self identity bootstrap 除外，Link 自身不持久化任何名字）、自动回收策略、模型选择、workflow/task/stage 状态、业务结果 schema、evidence/receipt/review、持久消息队列、跨机器传输、权限审批系统、离线投递、可靠投递确认、全局权限、跨 session 持久化。
 
 明确不属于 Herdr Link 的还有：
 
