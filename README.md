@@ -68,8 +68,11 @@ The plugin action is read-only diagnostics; the Agent-facing protocol surface sh
 ### Pi (native extension)
 
 ```bash
-pi install git:github.com/LZHcode1986/herdr-link          # global
-pi install -l git:github.com/LZHcode1986/herdr-link       # project-local
+pi install npm:herdr-link          # global (recommended)
+pi install -l npm:herdr-link        # project-local
+
+# from source instead:
+pi install git:github.com/LZHcode1986/herdr-link
 ```
 
 Manual/dev loading:

@@ -100,7 +100,7 @@ Use:
 
 ## 2. Claude Code（launcher + shared MCP）
 
-> **状态：VALIDATED（happy path，2026-08-24）**——CC 2.1.241 已在独立 Herdr tab 的新 pane 中完成 MCP handshake、工具呈现、Contract launcher 注入及 model-facing `peers → send(reply_to)` 任务闭环。**尚未实测**：lazy activation 呈现（须按 §5 重跑冒烟）与 model-facing error path（`PEER_NOT_FOUND` isError 透传）。共享 MCP server 无需 CC 专属代码。
+> **状态：VALIDATED（开发与验证已完成）**——CC 2.1.241 已在独立 Herdr tab 的新 pane 中完成 MCP handshake、工具呈现、Contract launcher 注入及 model-facing `peers → send(reply_to)` 任务闭环；lazy activation 呈现与 model-facing error path（`PEER_NOT_FOUND` isError 透传）亦已实测通过。共享 MCP server 无需 CC 专属代码。
 > **命名约束**：CC 的 MCP server key 必须使用 `herdr_link`（下划线）；模型呈现为 `mcp__herdr_link__<canonical>`。`serverInfo.name` 仍为 `herdr-link`，两者不可混用。allowlist 使用 `mcp__herdr_link__*`。
 
 注册 MCP server（二选一）：

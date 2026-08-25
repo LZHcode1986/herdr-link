@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Docs: Pi installation now recommends the published npm package (`pi install npm:herdr-link`); git source kept as the from-source alternative.
+- Docs: Claude Code wiring status in `docs/mcp-wiring.md` updated to fully validated (lazy activation presentation and model-facing error path included).
+
 ## [0.2.1] - 2026-08-25
 
 ### Changed

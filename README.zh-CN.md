@@ -56,8 +56,11 @@ Herdr Link 不决定 Agent 应该做什么，也不负责 Agent 的创建、调�
 ### Pi（原生扩展）
 
 ```bash
-pi install git:github.com/LZHcode1986/herdr-link          # 全局
-pi install -l git:github.com/LZHcode1986/herdr-link       # 仅当前项目
+pi install npm:herdr-link          # 全局（推荐）
+pi install -l npm:herdr-link        # 仅当前项目
+
+# 改用源码安装：
+pi install git:github.com/LZHcode1986/herdr-link
 ```
 
 手动/开发加载：
