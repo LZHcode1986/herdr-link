@@ -1,0 +1,41 @@
+name: Release
+
+# Publishes to npm from CI so every release carries signed provenance
+# (Sigstore): the package page then proves which repo/commit/workflow
+# built the tarball. Requires the NPM_TOKEN repo secret (an npm
+# Automation token — interactive tokens are forced through web OTP).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Validate build without publishing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance attestation (Sigstore OIDC)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org/
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:opencode && npm run build:mcp && head -1 dist/herdr-link.mcp.js | grep -q '#!'
+      - name: Publish to npm with provenance
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
