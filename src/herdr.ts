@@ -358,9 +358,9 @@ async function establishSelfName(pane: string, record: LiveRecordFields): Promis
  * Resolves the caller's own live context via `HERDR_PANE_ID -> agent get`.
  * Fresh on every call: name/workspace_id/pane_id/agent_status come from the
  * current live record, never from cache or ambient environment. A live but
- * unnamed occupant triggers the §6.3 self-bootstrap fallback, covering the
- * window where an adapter's init-time ensureSelfName() raced Herdr's
- * detection; context is then rebuilt from a fresh authoritative read.
+ * unnamed occupant triggers the §6.3 self-bootstrap fallback, providing a
+ * fresh resolution when the adapter's init-time bootstrap did not establish
+ * identity; context is then rebuilt from a fresh authoritative read.
  */
 export async function getSelfContext(): Promise<AgentContext> {
   assertHerdrEnvironment();
