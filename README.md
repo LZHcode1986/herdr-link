@@ -7,7 +7,7 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-Herdr Link is an on-demand cross-agent interoperability layer running inside Herdr sessions. Agents in the same workspace can discover each other, exchange protocol-typed messages, and close finished panes — through **three tools**, with **zero learning overhead**.
+Herdr Link is an on-demand cross-agent interoperability layer running inside Herdr sessions. Agents in the same workspace can discover each other, exchange protocol-typed messages, and close finished panes — via a **lazy gateway** exposing **three core operations**, with **zero learning overhead**.
 
 Adapters are provided for Pi (native extension), OpenCode (plugin bundle), and any MCP-capable runtime such as Claude Code, Codex, or AGY (shared stdio MCP server). The wire format is the `herdr-link/1` protocol, specified canonically in [`PROTOCOL.md`](./PROTOCOL.md).
 
@@ -19,7 +19,7 @@ The usual way to teach agents cross-agent messaging is to point them at the offi
 - that reasoning **consumes tokens and adds latency on every use**;
 - usage knowledge is **re-derived by the model** instead of being given to it.
 
-Herdr Link removes that step entirely. The adapter hands the model three self-describing tools and injects a compact communication contract automatically:
+Herdr Link removes that step entirely. The adapter hands the model three core operations behind a lazy gateway and injects a compact communication contract automatically:
 
 | | Official Herdr Skill route | With Herdr Link |
 |---|---|---|
@@ -32,7 +32,7 @@ In short:
 
 - **Fewer tokens.** Nothing to read or figure out. While dormant, the model sees only a tiny `herdr_link` gateway — no contract, no schemas. After activation it gets one short contract, not a manual.
 - **Faster communication.** Discover peers, send a protocol-typed message, or close a pane is a single direct tool call — no multi-step CLI orchestration in between.
-- **Effortless ("zero-reasoning") integration.** Activation is automatic on explicit user intent or on receiving an inbound `herdr-link/1` message; completion rules send requested results back to `from`, otherwise exactly `done` after success, with concise failure/blocker or no reply when explicitly requested.
+- **Effortless ("zero-reasoning") integration.** Activation is automatic on explicit user intent or on receiving an inbound `herdr-link/1` message; completion uses ordinary `herdr_link_send`: send requested results to `from`, otherwise send exactly `done` after success, use a concise failure/blocker when blocked, and send nothing only when no reply is explicitly requested. `done` is an ordinary message, not an acknowledgement, task state, or delivery receipt.
 
 ## How it works
 
@@ -135,7 +135,7 @@ The runtime process must be started by Herdr in a managed pane:
 | `SEND_FAILED` | Herdr did not accept the message prompt although guards passed |
 | `CLOSE_FAILED` | Target resolved to a pane but Herdr's pane close failed |
 
-Errors are local tool failures, not inter-agent message types; no auto-retry, no fallback, no pending state.
+Errors are local tool failures, not inter-agent message types; Link provides no acknowledgement, wait, poll, task/pending state, auto-retry, or fallback.
 
 ## Development
 
@@ -165,9 +165,9 @@ scripts/mcp-probe.mjs        stdio handshake debugging probe
 
 Layering rule: `protocol.ts` has zero Herdr IO; `herdr.ts` only drives the Herdr control plane (`execFile` argv arrays, no shell); `pi.ts` / `opencode.ts` / `mcp.ts` only do runtime wiring. Activation state lives in memory per runtime session: never persisted, never restored across sessions.
 
-## Non-goals (V1)
+## Scope and non-goals (V1)
 
-No agent creation/scheduling/recycling, model selection, workflow/task/stage state, business result schemas, evidence/receipt/review, persistent queues, cross-machine transport, permission approval, offline delivery, reliable-delivery acknowledgements, cross-session persistence, or **cross-workspace discovery/send/close** (that belongs to the official Herdr Skill / CLI control plane), and no workspace/topology management. Put business payloads in the `message` field; Link never interprets their semantics.
+Herdr Link is a same-workspace messaging/interoperability layer, not an agent lifecycle or task-management system. It does not provide agent creation/scheduling/recycling, model selection, workflow/task/stage state, business result schemas or evidence/receipt/review, acknowledgement/wait/poll/retry/pending-request semantics or reliable-delivery guarantees, persistent queues or cross-session persistence, cross-machine transport, permission approval, offline delivery, **cross-workspace discovery/send/close** (that belongs to the official Herdr Skill / CLI control plane), or workspace/topology management. Put business payloads in the `message` field; Link never interprets their semantics. See [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) for the canonical scope.
 
 ## License
 

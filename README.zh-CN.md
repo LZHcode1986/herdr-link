@@ -7,7 +7,7 @@
 
 [English](./README.md) | **简体中文**
 
-Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 workspace 内的 Agent 可以互相发现、交换协议化消息、关闭已完成的 pane——只通过 **3 个工具**，**零学习成本**。
+Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 workspace 内的 Agent 可以互相发现、交换协议化消息、关闭已完成的 pane——通过一个 **lazy gateway** 暴露 **3 项核心能力**，**零学习成本**。
 
 提供 Pi（原生扩展）、OpenCode（插件 bundle）以及任意支持 MCP 的 Runtime 如 Claude Code / Codex / AGY（共享 stdio MCP server）的 Adapter。线上格式为 `herdr-link/1` 协议，唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)。
 
@@ -19,7 +19,7 @@ Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 
 - 这些推理过程**每次使用都在消耗 token 并增加延迟**；
 - 使用知识靠模型**反复自行推导**，而不是直接交给它。
 
-Herdr Link 把这一步彻底去掉。Adapter 直接给模型 3 个自描述工具，并自动注入一份紧凑的通信契约：
+Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 3 项核心能力，并自动注入一份紧凑的通信契约：
 
 | | 官方 Herdr Skill 路线 | 使用 Herdr Link |
 |---|---|---|
@@ -32,7 +32,7 @@ Herdr Link 把这一步彻底去掉。Adapter 直接给模型 3 个自描述工�
 
 - **更少消耗。** 无需阅读、无需推导。dormant 态下模型只看到一个极小的 `herdr_link` gateway——无契约、无 schema；激活后也只注入一段简短契约，而不是一本手册。
 - **更快通讯。** 发现对端、发送协议化消息、关闭 pane 都是一次直接的工具调用——中间没有任何多步 CLI 编排。
-- **无感接入（零推理）。** 用户显式提出 Herdr 需求、或收到 inbound `herdr-link/1` 消息时自动激活；完成规则要求将指定结果发回 `from`，否则成功后精确发送 `done`，失败/阻塞时简短说明，明确要求不回复时不发送。
+- **无感接入（零推理）。** 用户显式提出 Herdr 需求、或收到 inbound `herdr-link/1` 消息时自动激活；完成通过普通的 `herdr_link_send`：将指定结果发给 `from`；未指定结果时成功后精确发送 `done`；失败/阻塞时发送简短说明；只有明确要求不回复时才不发送。`done` 只是普通消息，不是 ACK、任务状态或投递回执。
 
 ## 工作方式
 
@@ -123,7 +123,7 @@ MCP 同样是惰性呈现：非 Herdr 环境 `tools/list` 返回空集；Herdr m
 | `SEND_FAILED` | guard 通过后 Herdr 未接受 message prompt |
 | `CLOSE_FAILED` | 目标已解析到 pane，但 Herdr pane close 失败 |
 
-错误是本地 tool failure，不是跨 Agent 消息类型；不自动重试、不 fallback、不维护 pending 状态。
+错误是本地 tool failure，不是跨 Agent 消息类型；Link 不提供 ACK、wait、poll、task/pending 状态、自动重试或 fallback。
 
 ## 开发
 
@@ -153,9 +153,9 @@ scripts/mcp-probe.mjs        stdio 握手排障探针
 
 分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线。activation 是各 Adapter 内存中的 session 局部状态：不持久化、不跨 session 恢复。
 
-## Non-goals（V1）
+## 范围与非目标（V1）
 
-不提供：agent 创建/调度/回收、模型选择、workflow/task/stage 状态、业务结果 schema、evidence/receipt/review、持久消息队列、跨机器传输、权限审批、离线投递、可靠投递确认、跨 session 持久化、**跨 workspace 的 discovery/send/close**（属官方 Herdr Skill / CLI 控制面）、workspace/topology 管理面操作。业务 payload 放入 `message` 字段，Link 不解释其语义。
+Herdr Link 是同一 workspace 内的消息互操作层，不是 Agent 生命周期或任务管理系统。它不提供 agent 创建/调度/回收、模型选择、workflow/task/stage 状态、业务结果 schema/evidence/receipt/review、ACK/wait/poll/retry/pending-request 语义或可靠投递保证、持久队列或跨 session 持久化、跨机器传输、权限审批、离线投递、**跨 workspace 的 discovery/send/close**（属于官方 Herdr Skill / CLI 控制面），或 workspace/topology 管理。业务 payload 放入 `message` 字段；Link 不解释其语义。完整范围以 [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) 为准。
 
 ## 许可证
 
