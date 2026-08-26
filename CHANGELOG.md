@@ -5,10 +5,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-26
+
 ### Changed
 
-- Docs: Pi installation now recommends the published npm package (`pi install npm:herdr-link`); git source kept as the from-source alternative.
-- Docs: Claude Code wiring status in `docs/mcp-wiring.md` updated to fully validated (lazy activation presentation and model-facing error path included).
+- Reply completion now uses ordinary `herdr_link_send(to, message)`; `reply_to` is no longer part of the active Envelope, wrapper, tool schemas, or adapters. Replies target the inbound envelope's `from`.
+- The Communication Contract now defines requested-result, exact `done`, failure/blocker, and explicit no-reply completion behavior. `done` is an ordinary message, not an acknowledgement or task state.
+- README scope and non-goal documentation now describe the lazy gateway, three core operations, and the absence of ACK/wait/poll/retry/pending semantics.
+- Docs: Pi installation now recommends the published npm package (`pi install npm:herdr-link`); git source is kept as the from-source alternative.
+- Docs: Claude Code wiring status in `docs/mcp-wiring.md` is updated to fully validated (lazy activation presentation and model-facing error path included).
 
 ## [0.2.1] - 2026-08-25
 
