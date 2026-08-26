@@ -258,7 +258,7 @@ test("MCP server request handler", async (t) => {
     }
     const descriptionByName = new Map(tools.map((tool) => [tool.name, String(tool.description)]));
     assert.match(descriptionByName.get("herdr_link_peers") ?? "", /same Herdr workspace/);
-    assert.match(descriptionByName.get("herdr_link_send") ?? "", /reply_to/);
+    assert.match(descriptionByName.get("herdr_link_send") ?? "", /status "sent"/);
     assert.match(descriptionByName.get("herdr_link_close") ?? "", /later tool step/);
     for (const name of [HERDR_LINK_GATEWAY, ...HERDR_LINK_TOOLS]) {
       assert.match(descriptionByName.get(name) ?? "", /Use Herdr Link, not raw Herdr CLI/);
@@ -276,7 +276,7 @@ test("MCP server request handler", async (t) => {
     const closeProperties = byName.get("herdr_link_close")?.properties as Record<string, unknown>;
     assertBasicString(sendProperties.to);
     assertBasicString(sendProperties.message);
-    assertBasicString(sendProperties.reply_to);
+    assert.deepEqual(Object.keys(sendProperties), ["to", "message"]);
     assertBasicString(closeProperties.agent);
   });
 
@@ -308,7 +308,7 @@ test("MCP server request handler", async (t) => {
       jsonrpc: "2.0",
       id: 2,
       method: "tools/call",
-      params: { name: "herdr_link_send", arguments: { to: "worker-a", message: "hello", reply_to: "hl_prev_1" } },
+      params: { name: "herdr_link_send", arguments: { to: "worker-a", message: "hello" } },
     });
     const sentResult = sent?.result as { content: Array<{ text: string }> };
     assert.deepEqual(JSON.parse(sentResult.content[0]!.text), { status: "sent", id: "hl_unit_1", to: "worker-a" });
@@ -326,8 +326,8 @@ test("MCP server request handler", async (t) => {
   await t.test("passes validated arguments through to the control layer", async () => {
     const captured: Array<unknown[]> = [];
     const handler = handlerWith({
-      sendMessage: (to: string, message: string, reply_to?: string) => {
-        captured.push([to, message, reply_to]);
+      sendMessage: (to: string, message: string) => {
+        captured.push([to, message]);
         return ok({ status: "sent" as const, id: "hl_x_1", to });
       },
     });
@@ -337,7 +337,7 @@ test("MCP server request handler", async (t) => {
       method: "tools/call",
       params: { name: "herdr_link_send", arguments: { to: "worker-b", message: "hi" } },
     });
-    assert.deepEqual(captured, [["worker-b", "hi", undefined]]);
+    assert.deepEqual(captured, [["worker-b", "hi"]]);
   });
 
   await t.test("gateway action-dispatch reaches the canonical executor (fallback for non-refreshing hosts)", async () => {
@@ -362,7 +362,7 @@ test("MCP server request handler", async (t) => {
         name: HERDR_LINK_GATEWAY,
         arguments: {
           action: "send",
-          arguments: { to: "worker-a", message: "via gateway", reply_to: "hl_prev_9" },
+          arguments: { to: "worker-a", message: "via gateway" },
         },
       },
     });

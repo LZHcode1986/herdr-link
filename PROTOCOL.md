@@ -27,18 +27,19 @@ herdr-link/1
 
 ### 2.2 回复
 
+回复同样使用普通 `herdr_link_send`，目标直接取收到消息的 `from`；不读取、复制或提交收到消息的 `id`：
+
 ```json
 {
   "protocol": "herdr-link/1",
   "id": "hl_mep7def_9q3r5s",
   "from": "reviewer",
   "to": "brain",
-  "reply_to": "hl_mep7abc_4f8k2n",
   "message": "检查完成。"
 }
 ```
 
-发送与回复共用同一个 Envelope 和同一个工具；回复仅增加 `reply_to`，不存在独立的 reply 工具或消息类型。
+发送与回复共用同一个 Envelope 和同一个工具；回复不增加额外协议字段，不存在独立的 reply 工具或消息类型。
 
 ### 2.3 字段定义
 
@@ -48,7 +49,6 @@ herdr-link/1
 | `id` | 是 | Adapter | 消息唯一 ID，格式为 `hl_<timestamp>_<random>`；`timestamp` 与 `random` 均为非空小写字母数字串 |
 | `from` | 是 | Adapter | 当前 Agent Name（从 Herdr identity 即时解析）；模型不可自行声明 |
 | `to` | 是 | Model input → Adapter validation | 目标 Agent Name；必须匹配 `[a-z][a-z0-9_-]{0,31}` 且为当前 workspace 内的 live named peer |
-| `reply_to` | 否 | Model input → Adapter validation | 被回复消息的合法 `herdr-link/1` `id` |
 | `message` | 是 | Model | 非空业务 payload（至少包含一个非空白字符，可含 JSON/YAML）；Link 不解析其语义 |
 
 ### 2.4 不进入 Envelope 的字段
@@ -75,10 +75,11 @@ Herdr Link is the standard interoperability channel between agents running in th
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.
+5. When replying, use herdr_link_send to the agent named in "from".
+6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
+7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
+8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.
 ```
 
 `PROTOCOL.md` 是上述核心文本的唯一人工维护位置。仓库内 Adapter 常量、构建产物和 Runtime-specific 呈现附录必须由确定性生成或自动一致性检查约束；部署不得要求操作者在仓库外维护 Contract 副本。
@@ -117,9 +118,9 @@ Herdr Link is the standard interoperability channel between agents running in th
   - 不返回 workspace_id / pane_id / tab_id / terminal ID；
   - `state` 仅供观察：不排序优先级、不解释业务含义、**不作为 send / close 的前置条件**。
 
-### 4.3 Tier 1：`herdr_link_send`（含回复）
+### 4.3 Tier 1：`herdr_link_send`
 
-- 输入：`{ "to": string, "message": string, "reply_to": string (可选) }`；`to`、`message` 与 `reply_to` 必须满足 §2.3；
+- 输入：`{ "to": string, "message": string }`；`to` 与 `message` 必须满足 §2.3；
 - 输出：`{ "status": "sent", "id": string, "to": string }`
 - 语义：
   - 每次 send 都实时重新解析 self 与 target 的 live 记录并执行 same-workspace guard（§5），不缓存；
@@ -151,7 +152,7 @@ Herdr Link is the standard interoperability channel between agents running in th
 - 无论哪种形态，呈现层与 canonical 名之间必须有确定性映射；入参/出参 schema、错误语义与调用时序约束完全一致；
 - Active presentation 必须同时声明该 Runtime 的实际呈现方式与 dormant/active 行为，使模型无需猜测即可正确激活和调用。
 
-逻辑能力集合在所有形态下恒为：**activate / peers / send(+reply) / close**。
+逻辑能力集合在所有形态下恒为：**activate / peers / send（包括普通回复）/ close**。
 
 ## 5. Peer 地址模型与通信域
 
@@ -170,7 +171,7 @@ Herdr Link is the standard interoperability channel between agents running in th
 
 1. **Activate**：提供 `herdr_link` gateway 等价能力（§4.1）；
 2. **Expose Active Contract Semantics**：active 后让模型完整知道本协议第 3 节的规则；允许通过 system-prompt injection、active tool schema/description、gateway presentation 或组合实现；dormant 时必须**不**暴露 Tier 1 Contract 语义；
-3. **Expose Peers / Send**：提供 `herdr_link_peers`、`herdr_link_send`（含 reply_to 回复）等价能力；
+3. **Expose Peers / Send**：提供 `herdr_link_peers`、`herdr_link_send`（包括普通回复）等价能力；
 4. **Expose Close**：提供 `herdr_link_close` 等价能力。
 
 “同一 Runtime Adapter”指一个可独立安装和验证的 Runtime-specific 交付单元；它可以由多个宿主接线点组成（例如 MCP tools + Runtime hook），但不得把外部 Agent 指令文件或操作者维护的 Contract 副本当作第五项依赖。
@@ -191,7 +192,7 @@ Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool s
 - **Dormant 为默认态**。满足环境门控后，模型侧只看到 gateway；不注入 Contract、不呈现 Tier 1 完整 schema、不加载官方 Herdr Skill、不产生后台轮询/监听。
 - **激活触发仅有两个**：用户显式要求使用 Herdr（explicit Herdr intent），或收到一条 self-describing 的 inbound `herdr-link/1` 投递（§2）。两者都表现为模型调用 gateway；inbound 触发不要求宿主具备 prompt 拦截能力——wrapper 文本本身引导模型调用 gateway。
 - **Once-per-runtime-session**：激活后在当前 runtime session 内保持 active，不因后续用户消息不再提及 Herdr 而回退；新 runtime session 重新从 dormant 开始。activation 是内存中的 session 局部状态，不持久化、不写文件、不进 DB。
-- **Communication readiness**：已激活的当前 pane occupant 还必须拥有合法、稳定的 live Agent Name，才能作为 Envelope 的 `from` 使用 `herdr_link_peers` / `herdr_link_send` / reply。
+- **Communication readiness**：已激活的当前 pane occupant 还必须拥有合法、稳定的 live Agent Name，才能作为 Envelope 的 `from` 使用 `herdr_link_peers` / `herdr_link_send`。
 - 已激活但当前 occupant 未命名时，Herdr Link 先执行一次内部 self identity bootstrap（§6.3）：为已被 Herdr 识别但尚未命名的当前 occupant 自动生成并绑定一个 Link 前缀的临时 Agent Name 后再正常通信；occupant 尚未被 Herdr 检测或 bootstrap 最终失败时，通信调用返回 `SELF_UNNAMED`。除 §6.3 的碰撞重生外不自动 retry；不猜测名字、不缓存旧名字。
 - 当前 occupant 已有合法 Agent Name 时绝不改名：用户指定名保持不变，仅在无合法名时生成新名。Link 不持久化 Agent Names；名字的生命周期与恢复仍由 Herdr 和部署/编排层负责，Link 只在每次通信调用时消费 live identity。显式 `herdr_link_close(agent)` 仍按目标 Agent Name 解析，不把调用方是否已命名作为额外条件。
 

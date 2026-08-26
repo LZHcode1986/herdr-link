@@ -471,7 +471,6 @@ export async function listPeers(): Promise<PeerDirectory> {
 export async function sendMessage(
   to: string,
   message: string,
-  reply_to?: string,
 ): Promise<{ status: "sent"; id: string; to: string }> {
   const self = await getSelfContext();
   const target = await getAgentContext(to);
@@ -481,7 +480,6 @@ export async function sendMessage(
     from: self.name,
     to: target.name,
     message,
-    reply_to,
   });
 
   await runFor(["agent", "prompt", target.name, buildInboundWrapper(envelope)], "SEND_FAILED");

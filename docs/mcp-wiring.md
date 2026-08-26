@@ -59,10 +59,11 @@ Herdr Link is the standard interoperability channel between agents running in th
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.
+5. When replying, use herdr_link_send to the agent named in "from".
+6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
+7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
+8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.
 ```
 
 ### 1.2 Codex 附录（prefix 型，`buildMcpPrefixedCommunicationContract("herdr_link")`）
@@ -100,7 +101,7 @@ Use:
 
 ## 2. Claude Code（launcher + shared MCP）
 
-> **状态：VALIDATED（开发与验证已完成）**——CC 2.1.241 已在独立 Herdr tab 的新 pane 中完成 MCP handshake、工具呈现、Contract launcher 注入及 model-facing `peers → send(reply_to)` 任务闭环；lazy activation 呈现与 model-facing error path（`PEER_NOT_FOUND` isError 透传）亦已实测通过。共享 MCP server 无需 CC 专属代码。
+> **状态：VALIDATED（开发与验证已完成）**——CC 2.1.241 已在独立 Herdr tab 的新 pane 中完成 MCP handshake、工具呈现、Contract launcher 注入及 model-facing `peers → send` 任务闭环；lazy activation 呈现与 model-facing error path（`PEER_NOT_FOUND` isError 透传）亦已实测通过。共享 MCP server 无需 CC 专属代码。
 > **命名约束**：CC 的 MCP server key 必须使用 `herdr_link`（下划线）；模型呈现为 `mcp__herdr_link__<canonical>`。`serverInfo.name` 仍为 `herdr-link`，两者不可混用。allowlist 使用 `mcp__herdr_link__*`。
 
 注册 MCP server（二选一）：
@@ -272,4 +273,4 @@ printf '%s\n%s\n%s\n%s\n' \
 | 5 | AGY hooks.json 写顶层 `"PreInvocation"` 不生效 | AGY 格式为按集成名分组：`{"<name>": {"PreInvocation": [...]}}`，多组同名事件顺序合并 | 用独立组名（如 `"herdr-link"`），与 herdr 官方集成组并存 |
 | 6 | Host 对 `notifications/tools/list_changed` 不重新拉取 `tools/list` | 各 Host 刷新行为不一（工程确认项） | 保持 gateway 显式 action 分发（§总览 fallback 行）；canonical 语义不变 |
 
-E2E 记录：Codex TUI 与 AGY 曾各自完成 peers → send(reply_to 关联) → brain 收 envelope 全闭环、`PEER_NOT_FOUND` isError 文本透传一致、`herdr_link_close` 返回 `{status:"closed",agent}`——**该记录取证于常驻三工具呈现时代**；lazy activation 呈现（dormant 单工具、listChanged、gateway dispatch）尚未有同等真机记录，发布前须按 §5 重跑。
+E2E 记录：Codex TUI 与 AGY 曾各自完成 peers → send → brain 收 envelope 全闭环、`PEER_NOT_FOUND` isError 文本透传一致、`herdr_link_close` 返回 `{status:"closed",agent}`——**该记录取证于常驻三工具呈现时代**；lazy activation 呈现（dormant 单工具、listChanged、gateway dispatch）尚未有同等真机记录，发布前须按 §5 重跑。

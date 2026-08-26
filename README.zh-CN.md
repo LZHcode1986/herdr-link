@@ -32,7 +32,7 @@ Herdr Link 把这一步彻底去掉。Adapter 直接给模型 3 个自描述工�
 
 - **更少消耗。** 无需阅读、无需推导。dormant 态下模型只看到一个极小的 `herdr_link` gateway——无契约、无 schema；激活后也只注入一段简短契约，而不是一本手册。
 - **更快通讯。** 发现对端、发送协议化消息、关闭 pane 都是一次直接的工具调用——中间没有任何多步 CLI 编排。
-- **无感接入（零推理）。** 用户显式提出 Herdr 需求、或收到 inbound `herdr-link/1` 消息时自动激活；回复通过 `reply_to` 关联，Agent 不需要自己发明簿记机制。
+- **无感接入（零推理）。** 用户显式提出 Herdr 需求、或收到 inbound `herdr-link/1` 消息时自动激活；完成规则要求将指定结果发回 `from`，否则成功后精确发送 `done`，失败/阻塞时简短说明，明确要求不回复时不发送。
 
 ## 工作方式
 
@@ -42,7 +42,7 @@ Herdr Link 把这一步彻底去掉。Adapter 直接给模型 3 个自描述工�
 Agent A → herdr_link {}                    # 激活（幂等）
 Agent A → herdr_link_send(to="B", ...)     # status "sent"
 Agent B → （收到 inbound wrapper）herdr_link {}   # 自动激活触发
-Agent B → herdr_link_send(to="A", reply_to=<received id>, ...)
+Agent B → herdr_link_send(to="A", message="结果或 done")
 任意一方 → herdr_link_close(agent="worker-a")   # 最终 send 返回 sent 之后的工具步骤
 ```
 

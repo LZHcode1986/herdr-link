@@ -8,7 +8,6 @@ import { randomBytes } from "node:crypto";
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-var MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 var HERDR_LINK_GATEWAY = "herdr_link";
 var AGENT_STATES = ["idle", "working", "blocked", "done", "unknown"];
 function toAgentState(value) {
@@ -47,9 +46,6 @@ function createMessageId() {
 function isValidAgentName(name) {
   return AGENT_NAME_RE.test(name);
 }
-function isValidMessageId(id) {
-  return MESSAGE_ID_RE.test(id);
-}
 function buildEnvelope(input) {
   if (!isValidAgentName(input.from)) {
     throw new HerdrLinkError(
@@ -66,12 +62,6 @@ function buildEnvelope(input) {
   if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new HerdrLinkError("SEND_FAILED", "message must be a non-empty string");
   }
-  if (input.reply_to !== void 0 && !isValidMessageId(input.reply_to)) {
-    throw new HerdrLinkError(
-      "SEND_FAILED",
-      "reply_to must be a valid herdr-link/1 message id when present"
-    );
-  }
   const envelope = {
     protocol: PROTOCOL_ID,
     id: createMessageId(),
@@ -79,9 +69,6 @@ function buildEnvelope(input) {
     to: input.to,
     message: input.message
   };
-  if (input.reply_to !== void 0) {
-    envelope.reply_to = input.reply_to;
-  }
   return envelope;
 }
 var INBOUND_WRAPPER_MARKER = `[${PROTOCOL_ID}]`;
@@ -91,14 +78,11 @@ function buildInboundWrapper(envelope) {
     `From: ${envelope.from}`,
     `Message id: ${envelope.id}`
   ];
-  if (envelope.reply_to !== void 0) {
-    lines.push(`Reply to: ${envelope.reply_to}`);
-  }
   lines.push(
     "",
     "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
     `Treat the envelope's "message" field as content sent by the agent named in "from".`,
-    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to envelope.from with reply_to set to envelope.id.",
+    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to the agent named in envelope.from.",
     "",
     JSON.stringify(envelope)
   );
@@ -110,10 +94,11 @@ var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channe
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
+5. When replying, use herdr_link_send to the agent named in "from".
+6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
+7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
+8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
 
 // src/herdr.ts
 function attachCliOutput(error, stdout, stderr) {
@@ -393,15 +378,14 @@ async function listPeers() {
   }
   return { self: { name: self.name, state: self.agent_status }, peers };
 }
-async function sendMessage(to, message, reply_to) {
+async function sendMessage(to, message) {
   const self = await getSelfContext();
   const target = await getAgentContext(to);
   assertSameWorkspace(self, target);
   const envelope = buildEnvelope({
     from: self.name,
     to: target.name,
-    message,
-    reply_to
+    message
   });
   await runFor(["agent", "prompt", target.name, buildInboundWrapper(envelope)], "SEND_FAILED");
   return { status: "sent", id: envelope.id, to: target.name };
@@ -439,7 +423,7 @@ async function closeAgentPane(agentName) {
 // src/opencode.ts
 var GATEWAY_PRESENTATION_APPENDIX = `In this runtime the active Herdr Link capabilities are dispatched through the single herdr_link gateway.
 - Use herdr_link with action "peers" to list live same-workspace agents.
-- Use herdr_link with action "send", to, message, and reply_to when replying.
+- Use herdr_link with action "send" with to and message to deliver an inter-agent message or ordinary reply.
 - Use herdr_link with action "close" and an Agent Name only after any final send returns status "sent", in a later tool step.`;
 var GATEWAY_CONTRACT = `${COMMUNICATION_CONTRACT}
 
@@ -468,14 +452,13 @@ var herdrLinkPlugin = async () => {
   return {
     tool: {
       [HERDR_LINK_GATEWAY]: tool({
-        description: `Herdr Link cross-agent communication gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "peers" to list live same-workspace agents, "send" with to + message (plus reply_to when replying) to deliver an inter-agent message, or "close" with agent to close a named agent's pane \u2014 only after any final send has returned status "sent", and in a later tool step.`,
+        description: `Herdr Link cross-agent communication gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "peers" to list live same-workspace agents, "send" with to + message to deliver an inter-agent message or ordinary reply, or "close" with agent to close a named agent's pane \u2014 only after any final send has returned status "sent", and in a later tool step.`,
         args: {
           action: tool.schema.enum(["peers", "send", "close"]).optional().describe(
             'Operation to run: "peers" | "send" | "close". Omit action entirely (call with {}) to activate Herdr Link for this session.'
           ),
           to: tool.schema.string().optional().describe('Target agent name; required for action "send".'),
           message: tool.schema.string().optional().describe('Message payload; required for action "send".'),
-          reply_to: tool.schema.string().optional().describe('Message id being replied to; optional, only with action "send".'),
           agent: tool.schema.string().optional().describe('Target agent name; required for action "close".')
         },
         async execute(args, context) {
@@ -499,7 +482,7 @@ var herdrLinkPlugin = async () => {
               failWith(new HerdrLinkError("SEND_FAILED", '"message" must be a non-empty string'), "SEND_FAILED");
             }
             try {
-              const envelope = await sendMessage(args.to, args.message, args.reply_to);
+              const envelope = await sendMessage(args.to, args.message);
               return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
             } catch (error) {
               failWith(error, "SEND_FAILED");

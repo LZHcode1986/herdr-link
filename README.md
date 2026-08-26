@@ -32,7 +32,7 @@ In short:
 
 - **Fewer tokens.** Nothing to read or figure out. While dormant, the model sees only a tiny `herdr_link` gateway — no contract, no schemas. After activation it gets one short contract, not a manual.
 - **Faster communication.** Discover peers, send a protocol-typed message, or close a pane is a single direct tool call — no multi-step CLI orchestration in between.
-- **Effortless ("zero-reasoning") integration.** Activation is automatic on explicit user intent or on receiving an inbound `herdr-link/1` message; reply correlation (`reply_to`) means the agent never has to invent bookkeeping.
+- **Effortless ("zero-reasoning") integration.** Activation is automatic on explicit user intent or on receiving an inbound `herdr-link/1` message; completion rules send requested results back to `from`, otherwise exactly `done` after success, with concise failure/blocker or no reply when explicitly requested.
 
 ## How it works
 
@@ -42,7 +42,7 @@ Every runtime exposes the same lazy two-tier surface:
 Agent A → herdr_link {}                    # activate (idempotent)
 Agent A → herdr_link_send(to="B", ...)     # status "sent"
 Agent B → (receives inbound wrapper) herdr_link {}   # auto-activation trigger
-Agent B → herdr_link_send(to="A", reply_to=<received id>, ...)
+Agent B → herdr_link_send(to="A", message="result or done")
 Anyone  → herdr_link_close(agent="worker-a")   # in a later tool step after the final send
 ```
 

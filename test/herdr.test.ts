@@ -171,7 +171,7 @@ test("Herdr control layer", async (t) => {
         ],
       });
 
-      const sent = await sendMessage("worker-a", "hello", "hl_previous_1");
+      const sent = await sendMessage("worker-a", "hello");
       assert.equal(sent.status, "sent");
       assert.equal(sent.to, "worker-a");
 
@@ -186,7 +186,7 @@ test("Herdr control layer", async (t) => {
       assert.ok(wrapperText.includes(`Message id: ${sent.id}`));
       assert.ok(wrapperText.includes("active Herdr Link send capability"));
       assert.ok(wrapperText.includes("envelope.from"));
-      assert.ok(wrapperText.includes("reply_to set to envelope.id"));
+      assert.doesNotMatch(wrapperText, /Reply to:/);
       const embedded = JSON.parse(wrapperText.split("\n").at(-1)!) as Record<string, unknown>;
       // Outer wrapper never enters the envelope: minimal herdr-link/1 fields only.
       assert.deepEqual(embedded, {
@@ -195,7 +195,6 @@ test("Herdr control layer", async (t) => {
         from: "brain",
         to: "worker-a",
         message: "hello",
-        reply_to: "hl_previous_1",
       });
 
       assert.deepEqual(await closeAgentPane("worker-a"), { status: "closed", agent: "worker-a" });
@@ -728,7 +727,6 @@ test("Herdr control layer", async (t) => {
   await t.test("classifies model-input validation failures as SEND_FAILED without delivering", async () => {
     await withMock(directoryHandler(baseDirectory()), async (calls) => {
       await assert.rejects(sendMessage("worker-a", "   "), matchesCode("SEND_FAILED"));
-      await assert.rejects(sendMessage("worker-a", "hello", "hl_bad"), matchesCode("SEND_FAILED"));
       assert.equal(calls.some((call) => call.args[1] === "prompt"), false);
     });
   });

@@ -38,7 +38,6 @@ const PEERS_PARAMETERS = Type.Object({});
 const SEND_PARAMETERS = Type.Object({
   to: Type.String(),
   message: Type.String(),
-  reply_to: Type.Optional(Type.String()),
 });
 const CLOSE_PARAMETERS = Type.Object({
   agent: Type.String(),
@@ -93,11 +92,11 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link_send",
     label: "Herdr Link Send",
     description:
-      'Send an inter-agent message (protocol herdr-link/1) to another agent through the cross-agent communication channel. status "sent" means Herdr accepted delivery, not that the peer finished its task. When replying, set reply_to to the received message id.',
+      'Send an inter-agent message (protocol herdr-link/1) to another agent through the cross-agent communication channel. status "sent" means Herdr accepted delivery, not that the peer finished its task.',
     parameters: SEND_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       try {
-        const envelope = await sendMessage(params.to, params.message, params.reply_to);
+        const envelope = await sendMessage(params.to, params.message);
         return toolResult({ status: "sent", id: envelope.id, to: envelope.to });
       } catch (error) {
         rethrowToolError(error, "SEND_FAILED");

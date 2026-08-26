@@ -115,13 +115,13 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
         safeParse(input: unknown): { success: boolean };
       }).safeParse(value).success;
 
-    assert.deepEqual(Object.keys(gateway.args), ["action", "to", "message", "reply_to", "agent"]);
+    assert.deepEqual(Object.keys(gateway.args), ["action", "to", "message", "agent"]);
     assert.equal(fieldAccepts("action", undefined), true);
     assert.equal(fieldAccepts("action", "peers"), true);
     assert.equal(fieldAccepts("action", "send"), true);
     assert.equal(fieldAccepts("action", "close"), true);
     assert.equal(fieldAccepts("action", "activate"), false);
-    for (const field of ["to", "message", "reply_to", "agent"]) {
+    for (const field of ["to", "message", "agent"]) {
       assert.equal(fieldAccepts(field, undefined), true);
       assert.equal(fieldAccepts(field, "x"), true);
     }
@@ -191,7 +191,9 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.equal(active.system.length, 2);
     assert.ok((active.system[1] ?? "").startsWith(COMMUNICATION_CONTRACT));
     assert.match(active.system[1] ?? "", /single herdr_link gateway/);
-    assert.match(active.system[1] ?? "", /reply_to/);
+    assert.match(active.system[1] ?? "", /exactly "done"/);
+    assert.match(active.system[1] ?? "", /failure or blocker/);
+    assert.match(active.system[1] ?? "", /explicitly requested no reply/);
     assert.match(active.system[1] ?? "", /later tool step/);
 
     // Repeated transforms stay idempotent.
@@ -234,7 +236,7 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.deepEqual(result.peers.map((peer) => peer.name), ["alpha", "beta"]);
   });
 
-  await t.test('dispatcher action="send" preserves envelope semantics incl. reply_to', async () => {
+  await t.test('dispatcher action="send" builds a minimal envelope', async () => {
     const { gateway } = await gatewayInHerdrEnvironment();
     const promptArgs: string[] = [];
     const runner: HerdrRunner = async (_file, args) => {
@@ -252,7 +254,7 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
 
     const result = (await executeGateway(
       gateway,
-      { action: "send", to: "alpha", message: "hello", reply_to: "hl_k1_abcd1234" },
+      { action: "send", to: "alpha", message: "hello" },
       "session-y",
     )) as { status: string; id: string; to: string };
     assert.deepEqual(result, { status: "sent", id: result.id, to: "alpha" });
@@ -268,7 +270,6 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.equal(envelope.from, "self");
     assert.equal(envelope.to, "alpha");
     assert.equal(envelope.message, "hello");
-    assert.equal(envelope.reply_to, "hl_k1_abcd1234");
   });
 
   await t.test('dispatcher action="close" resolves the live pane via core layer', async () => {
@@ -298,8 +299,6 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
   await t.test("dispatcher errors are uniformly formatted with stable codes", async () => {
     const { gateway } = await gatewayInHerdrEnvironment();
 
-    // Invalid reply_to fails envelope validation in the protocol core and is
-    // surfaced under the operation's own failure code.
     setHerdrRunnerForTests(async (_file, args) => {
       if (args[0] === "agent" && args[1] === "get") {
         return { stdout: JSON.stringify(liveAgent(String(args[2]))), stderr: "" };
@@ -307,10 +306,6 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
       return { stdout: "{}", stderr: "" };
     });
     t.after(() => setHerdrRunnerForTests(undefined));
-    assert.equal(
-      await executeGatewayError(gateway, { action: "send", to: "alpha", message: "hi", reply_to: "not-an-id" }, "session-e"),
-      "SEND_FAILED: Herdr did not accept message delivery",
-    );
 
     // Missing per-action parameters keep the §7 vocabulary with stable text.
     assert.equal(

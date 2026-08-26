@@ -259,7 +259,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     assert.ok(result.systemPrompt.startsWith(baseSystemPrompt));
     const injected = result.systemPrompt.slice(baseSystemPrompt.length);
     assert.ok(injected.includes("\n\n"));
-    for (const marker of ["herdr-link/1", "reply_to", "herdr_link_peers", "herdr_link_send", "herdr_link_close", "later tool step"]) {
+    for (const marker of ["herdr-link/1", "exactly \"done\"", "failure or blocker", "explicitly requested no reply", "herdr_link_peers", "herdr_link_send", "herdr_link_close", "later tool step"]) {
       assert.ok(injected.includes(marker), `compact Contract must mention ${marker}`);
     }
     // Pi injects the canonical Contract directly; tool descriptions carry the presentation details.
@@ -318,7 +318,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     });
   });
 
-  await t.test("Tier 1: send builds envelope with reply_to correlation", async () => {
+  await t.test("Tier 1: send builds a minimal envelope", async () => {
     await withHerdrMock((args) => {
       if (args[0] === "agent" && args[1] === "get") {
         const name = args[2] === "worker-a" ? "worker-a" : "brain";
@@ -342,7 +342,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
 
       const result = (await send.execute(
         "s-1",
-        { to: "worker-a", message: "请检查设计。", reply_to: "hl_abc_defghijk" },
+        { to: "worker-a", message: "请检查设计。" },
         undefined,
         undefined,
         NO_CTX,
@@ -364,7 +364,6 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       assert.equal(envelope.from, "brain");
       assert.equal(envelope.to, "worker-a");
       assert.equal(envelope.message, "请检查设计。");
-      assert.equal(envelope.reply_to, "hl_abc_defghijk");
     });
   });
 

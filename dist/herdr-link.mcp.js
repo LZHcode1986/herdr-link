@@ -11,7 +11,6 @@ import { randomBytes } from "node:crypto";
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-var MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 var HERDR_LINK_GATEWAY = "herdr_link";
 var TOOL_PEERS = "herdr_link_peers";
 var TOOL_SEND = "herdr_link_send";
@@ -54,9 +53,6 @@ function createMessageId() {
 function isValidAgentName(name) {
   return AGENT_NAME_RE.test(name);
 }
-function isValidMessageId(id) {
-  return MESSAGE_ID_RE.test(id);
-}
 function buildEnvelope(input) {
   if (!isValidAgentName(input.from)) {
     throw new HerdrLinkError(
@@ -73,12 +69,6 @@ function buildEnvelope(input) {
   if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new HerdrLinkError("SEND_FAILED", "message must be a non-empty string");
   }
-  if (input.reply_to !== void 0 && !isValidMessageId(input.reply_to)) {
-    throw new HerdrLinkError(
-      "SEND_FAILED",
-      "reply_to must be a valid herdr-link/1 message id when present"
-    );
-  }
   const envelope = {
     protocol: PROTOCOL_ID,
     id: createMessageId(),
@@ -86,9 +76,6 @@ function buildEnvelope(input) {
     to: input.to,
     message: input.message
   };
-  if (input.reply_to !== void 0) {
-    envelope.reply_to = input.reply_to;
-  }
   return envelope;
 }
 var INBOUND_WRAPPER_MARKER = `[${PROTOCOL_ID}]`;
@@ -98,14 +85,11 @@ function buildInboundWrapper(envelope) {
     `From: ${envelope.from}`,
     `Message id: ${envelope.id}`
   ];
-  if (envelope.reply_to !== void 0) {
-    lines.push(`Reply to: ${envelope.reply_to}`);
-  }
   lines.push(
     "",
     "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
     `Treat the envelope's "message" field as content sent by the agent named in "from".`,
-    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to envelope.from with reply_to set to envelope.id.",
+    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to the agent named in envelope.from.",
     "",
     JSON.stringify(envelope)
   );
@@ -117,10 +101,11 @@ var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channe
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
+5. When replying, use herdr_link_send to the agent named in "from".
+6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
+7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
+8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
 
 // src/herdr.ts
 function attachCliOutput(error, stdout, stderr) {
@@ -400,15 +385,14 @@ async function listPeers() {
   }
   return { self: { name: self.name, state: self.agent_status }, peers };
 }
-async function sendMessage(to, message, reply_to) {
+async function sendMessage(to, message) {
   const self = await getSelfContext();
   const target = await getAgentContext(to);
   assertSameWorkspace(self, target);
   const envelope = buildEnvelope({
     from: self.name,
     to: target.name,
-    message,
-    reply_to
+    message
   });
   await runFor(["agent", "prompt", target.name, buildInboundWrapper(envelope)], "SEND_FAILED");
   return { status: "sent", id: envelope.id, to: target.name };
@@ -455,7 +439,7 @@ var INVALID_PARAMS = -32602;
 var NORMAL_MESSAGING_RULE = "Use Herdr Link, not raw Herdr CLI, pane ids, or terminal input, for normal inter-agent messaging.";
 var TOOL_DESCRIPTIONS = {
   [TOOL_PEERS]: `Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses. ${NORMAL_MESSAGING_RULE}`,
-  [TOOL_SEND]: `Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
+  [TOOL_SEND]: `Send a herdr-link/1 message to a live named peer in your own workspace; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_CLOSE]: `Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step. ${NORMAL_MESSAGING_RULE}`
 };
 var TOOL_INPUT_SCHEMAS = {
@@ -464,8 +448,7 @@ var TOOL_INPUT_SCHEMAS = {
     type: "object",
     properties: {
       to: { type: "string", description: "Target Herdr agent name" },
-      message: { type: "string", description: "Message payload" },
-      reply_to: { type: "string", description: "Message id being replied to" }
+      message: { type: "string", description: "Message payload" }
     },
     required: ["to", "message"]
   },
@@ -484,7 +467,7 @@ var FALLBACK_ERROR_CODE = {
 };
 var GATEWAY_TOOL = {
   name: HERDR_LINK_GATEWAY,
-  description: 'Herdr Link gateway. Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Cross-agent messaging starts dormant: call this tool once with no arguments ({}) to activate it for this session \u2014 the host is notified via notifications/tools/list_changed and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{"to":...,"message":...,"reply_to":...}}, or {"action":"close","arguments":{"agent":...}}.',
+  description: 'Herdr Link gateway. Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Cross-agent messaging starts dormant: call this tool once with no arguments ({}) to activate it for this session \u2014 the host is notified via notifications/tools/list_changed and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{"to":...,"message":...}}, or {"action":"close","arguments":{"agent":...}}.',
   inputSchema: {
     type: "object",
     properties: {
@@ -530,14 +513,6 @@ function requireStringArg(args, key, code) {
   const value = args[key];
   if (typeof value !== "string") {
     throw new HerdrLinkError(code, `"${key}" must be a string`);
-  }
-  return value;
-}
-function optionalStringArg(args, key, code) {
-  const value = args[key];
-  if (value === void 0 || value === null) return void 0;
-  if (typeof value !== "string") {
-    throw new HerdrLinkError(code, `"${key}" must be a string when present`);
   }
   return value;
 }
@@ -602,8 +577,7 @@ function createRequestHandler(deps = {}) {
       case TOOL_SEND: {
         const to = requireStringArg(args, "to", "PEER_NOT_FOUND");
         const message = requireStringArg(args, "message", "SEND_FAILED");
-        const reply_to = optionalStringArg(args, "reply_to", "SEND_FAILED");
-        const sent = await runSend(to, message, reply_to);
+        const sent = await runSend(to, message);
         return { status: sent.status, id: sent.id, to: sent.to };
       }
       case TOOL_CLOSE: {

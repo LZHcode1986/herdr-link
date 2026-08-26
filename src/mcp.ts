@@ -76,7 +76,7 @@ const NORMAL_MESSAGING_RULE = "Use Herdr Link, not raw Herdr CLI, pane ids, or t
 const TOOL_DESCRIPTIONS: Record<CanonicalToolName, string> = {
   [TOOL_PEERS]: `Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_SEND]:
-    `Send a herdr-link/1 message to a live named peer in your own workspace. When replying, set reply_to to the received envelope id; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
+    `Send a herdr-link/1 message to a live named peer in your own workspace; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_CLOSE]:
     `Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step. ${NORMAL_MESSAGING_RULE}`,
 };
@@ -88,7 +88,6 @@ const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
     properties: {
       to: { type: "string", description: "Target Herdr agent name" },
       message: { type: "string", description: "Message payload" },
-      reply_to: { type: "string", description: "Message id being replied to" },
     },
     required: ["to", "message"],
   },
@@ -120,7 +119,7 @@ const GATEWAY_TOOL: { name: typeof HERDR_LINK_GATEWAY; description: string; inpu
     "({}) to activate it for this session — the host is notified via notifications/tools/list_changed " +
     "and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. " +
     'If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, ' +
-    '{"action":"send","arguments":{"to":...,"message":...,"reply_to":...}}, or ' +
+    '{"action":"send","arguments":{"to":...,"message":...}}, or ' +
     '{"action":"close","arguments":{"agent":...}}.',
   inputSchema: {
     type: "object",
@@ -183,19 +182,6 @@ function requireStringArg(args: Record<string, unknown>, key: string, code: Link
   const value = args[key];
   if (typeof value !== "string") {
     throw new HerdrLinkError(code, `"${key}" must be a string`);
-  }
-  return value;
-}
-
-function optionalStringArg(
-  args: Record<string, unknown>,
-  key: string,
-  code: LinkErrorCode,
-): string | undefined {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string") {
-    throw new HerdrLinkError(code, `"${key}" must be a string when present`);
   }
   return value;
 }
@@ -314,8 +300,7 @@ export function createRequestHandler(
       case TOOL_SEND: {
         const to = requireStringArg(args, "to", "PEER_NOT_FOUND");
         const message = requireStringArg(args, "message", "SEND_FAILED");
-        const reply_to = optionalStringArg(args, "reply_to", "SEND_FAILED");
-        const sent = await runSend(to, message, reply_to);
+        const sent = await runSend(to, message);
         return { status: sent.status, id: sent.id, to: sent.to };
       }
       case TOOL_CLOSE: {

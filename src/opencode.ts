@@ -42,7 +42,7 @@ import {
 /** Runtime-specific active presentation; the semantic Contract remains canonical. */
 const GATEWAY_PRESENTATION_APPENDIX = `In this runtime the active Herdr Link capabilities are dispatched through the single herdr_link gateway.
 - Use herdr_link with action "peers" to list live same-workspace agents.
-- Use herdr_link with action "send", to, message, and reply_to when replying.
+- Use herdr_link with action "send" with to and message to deliver an inter-agent message or ordinary reply.
 - Use herdr_link with action "close" and an Agent Name only after any final send returns status "sent", in a later tool step.`;
 
 const GATEWAY_CONTRACT = `${COMMUNICATION_CONTRACT}\n\n${GATEWAY_PRESENTATION_APPENDIX}`;
@@ -92,7 +92,7 @@ export const herdrLinkPlugin: Plugin = async () => {
         description:
           "Herdr Link cross-agent communication gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. " +
           'Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. ' +
-            'Then pass action "peers" to list live same-workspace agents, "send" with to + message (plus reply_to when replying) to deliver an inter-agent message, or "close" with agent to close a named agent\'s pane — ' +
+            'Then pass action "peers" to list live same-workspace agents, "send" with to + message to deliver an inter-agent message or ordinary reply, or "close" with agent to close a named agent\'s pane — ' +
             'only after any final send has returned status "sent", and in a later tool step.',
         args: {
           action: tool.schema
@@ -109,10 +109,6 @@ export const herdrLinkPlugin: Plugin = async () => {
             .string()
             .optional()
             .describe('Message payload; required for action "send".'),
-          reply_to: tool.schema
-            .string()
-            .optional()
-            .describe('Message id being replied to; optional, only with action "send".'),
           agent: tool.schema
             .string()
             .optional()
@@ -143,7 +139,7 @@ export const herdrLinkPlugin: Plugin = async () => {
               failWith(new HerdrLinkError("SEND_FAILED", '"message" must be a non-empty string'), "SEND_FAILED");
             }
             try {
-              const envelope = await sendMessage(args.to, args.message, args.reply_to);
+              const envelope = await sendMessage(args.to, args.message);
               return jsonResult({ status: "sent", id: envelope.id, to: envelope.to });
             } catch (error) {
               failWith(error, "SEND_FAILED");

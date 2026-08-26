@@ -89,7 +89,6 @@ export interface HerdrLinkEnvelope {
   id: string;
   from: string;
   to: string;
-  reply_to?: string;
   message: string;
 }
 
@@ -149,7 +148,6 @@ export interface BuildEnvelopeInput {
   from: string;
   to: string;
   message: string;
-  reply_to?: string;
 }
 
 /**
@@ -173,12 +171,6 @@ export function buildEnvelope(input: BuildEnvelopeInput): HerdrLinkEnvelope {
   if (typeof input.message !== "string" || input.message.trim() === "") {
     throw new HerdrLinkError("SEND_FAILED", "message must be a non-empty string");
   }
-  if (input.reply_to !== undefined && !isValidMessageId(input.reply_to)) {
-    throw new HerdrLinkError(
-      "SEND_FAILED",
-      "reply_to must be a valid herdr-link/1 message id when present",
-    );
-  }
   const envelope: HerdrLinkEnvelope = {
     protocol: PROTOCOL_ID,
     id: createMessageId(),
@@ -186,9 +178,6 @@ export function buildEnvelope(input: BuildEnvelopeInput): HerdrLinkEnvelope {
     to: input.to,
     message: input.message,
   };
-  if (input.reply_to !== undefined) {
-    envelope.reply_to = input.reply_to;
-  }
   return envelope;
 }
 
@@ -209,8 +198,7 @@ export function isHerdrLinkEnvelope(value: unknown): value is HerdrLinkEnvelope 
     typeof v.to === "string" &&
     isValidAgentName(v.to) &&
     typeof v.message === "string" &&
-    v.message.trim() !== "" &&
-    (v.reply_to === undefined || (typeof v.reply_to === "string" && isValidMessageId(v.reply_to)))
+    v.message.trim() !== ""
   );
 }
 
@@ -219,7 +207,7 @@ export function isHerdrLinkEnvelope(value: unknown): value is HerdrLinkEnvelope 
  *
  * `herdr agent prompt` carries a self-describing wrapper around the
  * envelope so a dormant receiver (adapter loaded, model not mid-exchange)
- * can recognize the delivery and activate a reply addressed by reply_to.
+ * can recognize the delivery and activate a response addressed to envelope.from.
  * The wrapper is transport dressing ONLY: the envelope keeps exactly the
  * minimal herdr-link/1 fields and is embedded verbatim as the final line.
  * ------------------------------------------------------------------ */
@@ -234,14 +222,11 @@ export function buildInboundWrapper(envelope: HerdrLinkEnvelope): string {
     `From: ${envelope.from}`,
     `Message id: ${envelope.id}`,
   ];
-  if (envelope.reply_to !== undefined) {
-    lines.push(`Reply to: ${envelope.reply_to}`);
-  }
   lines.push(
     "",
     "The JSON object below is the complete herdr-link/1 envelope; the text around it is delivery metadata and is not part of the message.",
     'Treat the envelope\'s "message" field as content sent by the agent named in "from".',
-    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to envelope.from with reply_to set to envelope.id.",
+    "If a reply is needed, activate the Herdr Link gateway when dormant, then use the active Herdr Link send capability to send to the agent named in envelope.from.",
     "",
     JSON.stringify(envelope),
   );
@@ -270,7 +255,7 @@ export function extractInboundEnvelope(text: string): HerdrLinkEnvelope | undefi
 
 /**
  * Active Agent Communication Contract injected verbatim into the model.
- * Compact form: same-workspace addressing, send/reply/close semantics only.
+ * Compact form: same-workspace addressing, send/reply/completion/close semantics.
  */
 export const COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
 
@@ -278,7 +263,8 @@ export const COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperabili
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, send to the received "from" agent and set reply_to to the received "id".
-6. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-7. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-8. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
+5. When replying, use herdr_link_send to the agent named in "from".
+6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
+7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
+8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
+9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;

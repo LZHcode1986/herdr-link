@@ -79,18 +79,8 @@ test("buildEnvelope builds a valid envelope and assigns protocol/id/from by the 
   assert.equal(envelope.from, "brain");
   assert.equal(envelope.to, "reviewer");
   assert.equal(envelope.message, "请检查这个设计。");
-  assert.equal(envelope.reply_to, undefined);
+  assert.deepEqual(Object.keys(envelope).sort(), ["from", "id", "message", "protocol", "to"]);
   assert.ok(isHerdrLinkEnvelope(envelope));
-});
-
-test("buildEnvelope carries reply_to when provided", () => {
-  const envelope = buildEnvelope({
-    from: "reviewer",
-    to: "brain",
-    reply_to: "hl_abc_def",
-    message: "检查完成。",
-  });
-  assert.equal(envelope.reply_to, "hl_abc_def");
 });
 
 test("buildEnvelope rejects an invalid self name with SELF_UNNAMED", () => {
@@ -114,33 +104,24 @@ test("buildEnvelope rejects empty message with SEND_FAILED", () => {
   );
 });
 
-test("buildEnvelope rejects malformed reply_to with SEND_FAILED", () => {
-  assert.throws(
-    () => buildEnvelope({ from: "brain", to: "reviewer", reply_to: "hl_previous", message: "reply" }),
-    (err: unknown) => err instanceof HerdrLinkError && err.code === "SEND_FAILED",
-  );
-});
-
 test("isHerdrLinkEnvelope rejects non-envelopes", () => {
   assert.ok(!isHerdrLinkEnvelope(null));
   assert.ok(!isHerdrLinkEnvelope({ protocol: "other/1", id: "hl_a_b", from: "a", to: "b", message: "m" }));
   assert.ok(!isHerdrLinkEnvelope({ protocol: PROTOCOL_ID, id: "hl_bad", from: "a", to: "b", message: "m" }));
   assert.ok(!isHerdrLinkEnvelope({ protocol: PROTOCOL_ID, id: "hl_a_b", from: "Bad", to: "b", message: "m" }));
   assert.ok(!isHerdrLinkEnvelope({ protocol: PROTOCOL_ID, id: "hl_a_b", from: "a", to: "b", message: "   " }));
-  assert.ok(!isHerdrLinkEnvelope({ protocol: PROTOCOL_ID, id: "hl_a_b", from: "a", to: "b", message: "m", reply_to: "hl_prev" }));
   assert.ok(!isHerdrLinkEnvelope({ protocol: PROTOCOL_ID, id: "hl_a_b", from: 3, to: "b", message: "m" }));
 });
 
-test("isHerdrLinkEnvelope accepts a valid reply envelope", () => {
-  const reply: HerdrLinkEnvelope = {
+test("isHerdrLinkEnvelope accepts an inbound envelope without reply metadata", () => {
+  const envelope: HerdrLinkEnvelope = {
     protocol: PROTOCOL_ID,
     id: "hl_2_x",
     from: "reviewer",
     to: "brain",
-    reply_to: "hl_1_y",
     message: "done",
   };
-  assert.ok(isHerdrLinkEnvelope(reply));
+  assert.ok(isHerdrLinkEnvelope(envelope));
 });
 
 test("tiered naming constants expose gateway and canonical tool names", () => {
@@ -214,7 +195,10 @@ test("COMMUNICATION_CONTRACT states compact same-workspace send/reply/close sema
   assert.match(COMMUNICATION_CONTRACT, /outside your workspace/);
   // …send/reply semantics…
   assert.match(COMMUNICATION_CONTRACT, /herdr-link\/1/);
-  assert.match(COMMUNICATION_CONTRACT, /reply_to to the received "id"/);
+  assert.match(COMMUNICATION_CONTRACT, /When replying, use herdr_link_send to the agent named in "from"/);
+  assert.match(COMMUNICATION_CONTRACT, /exactly "done"/);
+  assert.match(COMMUNICATION_CONTRACT, /failure or blocker/);
+  assert.match(COMMUNICATION_CONTRACT, /explicitly requested no reply/);
   // …and close sequencing after a confirmed send.
   assert.match(COMMUNICATION_CONTRACT, /returns "sent"/);
   assert.match(COMMUNICATION_CONTRACT, /later tool step/);
@@ -235,7 +219,6 @@ test("buildInboundWrapper embeds the minimal envelope verbatim as the final line
   const envelope = buildEnvelope({
     from: "brain",
     to: "reviewer",
-    reply_to: "hl_prev_000001",
     message: "请检查这个设计。",
   });
 
@@ -245,10 +228,9 @@ test("buildInboundWrapper embeds the minimal envelope verbatim as the final line
   assert.ok(wrapper.startsWith(INBOUND_WRAPPER_MARKER));
   assert.ok(wrapper.includes("From: brain"));
   assert.ok(wrapper.includes(`Message id: ${envelope.id}`));
-  assert.ok(wrapper.includes(`Reply to: ${envelope.reply_to}`));
+  assert.doesNotMatch(wrapper, /Reply to:/);
   assert.ok(wrapper.includes("active Herdr Link send capability"));
   assert.ok(wrapper.includes("envelope.from"));
-  assert.ok(wrapper.includes("reply_to set to envelope.id"));
   assert.doesNotMatch(wrapper, /herdr_link_(?:peers|send|close)/);
   assert.ok(wrapper.includes("delivery metadata and is not part of the message"));
 
@@ -261,7 +243,6 @@ test("buildInboundWrapper embeds the minimal envelope verbatim as the final line
     id: envelope.id,
     from: "brain",
     to: "reviewer",
-    reply_to: "hl_prev_000001",
     message: "请检查这个设计。",
   });
   assert.ok(isHerdrLinkEnvelope(embedded));
@@ -283,7 +264,6 @@ test("extractInboundEnvelope recovers the envelope from a delivery wrapper", () 
   const envelope = buildEnvelope({
     from: "brain",
     to: "reviewer",
-    reply_to: "hl_prev_000002",
     message: "hello",
   });
   assert.deepEqual(extractInboundEnvelope(buildInboundWrapper(envelope)), envelope);
