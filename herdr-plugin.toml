@@ -1,6 +1,6 @@
 id = "herdr-link"
 name = "Herdr Link"
-version = "0.2.1"
+version = "0.3.0"
 min_herdr_version = "0.7.0"
 description = "Cross-agent messaging for Herdr sessions: same-workspace agents discover each other and exchange herdr-link/1 envelopes from Pi, OpenCode, Claude Code, Codex, and AGY without any Skill, AGENTS.md, or manual setup."
 platforms = ["linux", "macos", "windows"]
