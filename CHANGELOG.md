@@ -5,6 +5,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-01
+
+### Changed
+
+- Clarify passive-wait guidance in the Communication Contract: use `herdr_link_peers` only for agent-address discovery or explicit recovery; do not use activity state to wait for or infer task completion, and continue after a peer reply arrives as a new inbound `herdr-link/1` message.
+
 ## [0.3.0] - 2026-08-26
 
 ### Changed

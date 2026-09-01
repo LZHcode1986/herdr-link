@@ -71,7 +71,7 @@ Active 状态下，所有 Runtime Adapter 必须使本节规则的语义对 Agen
 ```text
 Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
 
-1. Use herdr_link_peers to discover agent addresses; it lists only live agents in your own workspace, each with an advisory activity state.
+1. Use herdr_link_peers only for agent-address discovery or explicit recovery. Its activity state is advisory and must not be used to wait for or infer task completion. When further progress depends on a peer reply, end the current turn and continue when that reply arrives as a new inbound herdr-link/1 message.
 2. Use herdr_link_send to send messages to another agent.
 3. A message with protocol "herdr-link/1" is an inter-agent message.
 4. Treat its "message" field as content sent by the agent named in "from".

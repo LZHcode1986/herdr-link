@@ -191,6 +191,11 @@ test("COMMUNICATION_CONTRACT states compact same-workspace send/reply/close sema
   assert.ok(rules.length >= 5 && rules.length <= 10, "contract must stay compact");
 
   // Same-workspace addressing…
+  // …passive-wait semantics…
+  assert.match(COMMUNICATION_CONTRACT, /herdr_link_peers only for agent-address discovery or explicit recovery/);
+  assert.match(COMMUNICATION_CONTRACT, /activity state is advisory and must not be used to wait for or infer task completion/);
+  assert.match(COMMUNICATION_CONTRACT, /When further progress depends on a peer reply, end the current turn/);
+  assert.match(COMMUNICATION_CONTRACT, /continue when that reply arrives as a new inbound herdr-link\/1 message/);
   assert.match(COMMUNICATION_CONTRACT, /same Herdr workspace/);
   assert.match(COMMUNICATION_CONTRACT, /outside your workspace/);
   // …send/reply semantics…
