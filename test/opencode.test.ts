@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { herdrLinkPlugin } from "../src/opencode.ts";
 import { setHerdrRunnerForTests, type HerdrRunner } from "../src/herdr.ts";
@@ -41,9 +44,9 @@ async function gatewayInHerdrEnvironment(): Promise<{ hooks: GatewayHooks; gatew
   return { hooks, gateway };
 }
 
-/** Minimal ToolContext stand-in: the gateway only reads sessionID. */
-function toolContext(sessionID: string): Parameters<GatewayTool["execute"]>[1] {
-  return { sessionID } as Parameters<GatewayTool["execute"]>[1];
+/** Minimal ToolContext stand-in: the gateway reads sessionID and directory. */
+function toolContext(sessionID: string, directory?: string): Parameters<GatewayTool["execute"]>[1] {
+  return { sessionID, ...(directory === undefined ? {} : { directory }) } as Parameters<GatewayTool["execute"]>[1];
 }
 
 /** Live-record fixture matching the v2 core reader: name/workspace/pane/status. */
@@ -51,8 +54,8 @@ function liveAgent(name: string, workspaceId = "ws-1"): unknown {
   return { result: { name, workspace_id: workspaceId, pane_id: `pane-${name}`, agent_status: "working" } };
 }
 
-async function executeGateway(gateway: GatewayTool, args: unknown, sessionID: string): Promise<unknown> {
-  const result = await gateway.execute(args as never, toolContext(sessionID));
+async function executeGateway(gateway: GatewayTool, args: unknown, sessionID: string, directory?: string): Promise<unknown> {
+  const result = await gateway.execute(args as never, toolContext(sessionID, directory));
   return JSON.parse(result as string);
 }
 
@@ -115,10 +118,11 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
         safeParse(input: unknown): { success: boolean };
       }).safeParse(value).success;
 
-    assert.deepEqual(Object.keys(gateway.args), ["action", "to", "message", "agent"]);
+    assert.deepEqual(Object.keys(gateway.args), ["action", "to", "message", "agent", "name", "pane", "config_agent", "kind", "args"]);
     assert.equal(fieldAccepts("action", undefined), true);
     assert.equal(fieldAccepts("action", "peers"), true);
     assert.equal(fieldAccepts("action", "send"), true);
+    assert.equal(fieldAccepts("action", "start"), true);
     assert.equal(fieldAccepts("action", "close"), true);
     assert.equal(fieldAccepts("action", "activate"), false);
     for (const field of ["to", "message", "agent"]) {
@@ -133,10 +137,10 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.ok(transform);
 
     const first = await executeGateway(gateway, {}, "session-1");
-    assert.deepEqual(first, { status: "active", capabilities: ["peers", "send", "close"] });
+    assert.deepEqual(first, { status: "active", capabilities: ["start", "peers", "send", "close"] });
 
     const second = await executeGateway(gateway, {}, "session-1");
-    assert.deepEqual(second, { status: "active", capabilities: ["peers", "send", "close"] });
+    assert.deepEqual(second, { status: "active", capabilities: ["start", "peers", "send", "close"] });
 
     const output = systemOutput("base prompt");
     await transform({ sessionID: "session-1", model: {} as never }, output as never);
@@ -235,7 +239,74 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.equal(result.self.name, "self");
     assert.deepEqual(result.peers.map((peer) => peer.name), ["alpha", "beta"]);
   });
+  await t.test('dispatcher action="start" forwards explicit launch parameters', async () => {
+    const { gateway } = await gatewayInHerdrEnvironment();
+    const startCalls: string[][] = [];
+    const runner: HerdrRunner = async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "start") {
+        startCalls.push([...args]);
+        return { stdout: JSON.stringify({ result: { accepted: true } }), stderr: "" };
+      }
+      throw new Error(`unexpected command: ${args.join(" ")}`);
+    };
+    setHerdrRunnerForTests(runner);
+    t.after(() => setHerdrRunnerForTests(undefined));
 
+    const result = await executeGateway(
+      gateway,
+      { action: "start", name: "worker-01", pane: "wS:p22", kind: "pi", args: ["--model", "model-x"] },
+      "session-start",
+    );
+    assert.deepEqual(result, { status: "started", agent: "worker-01", kind: "pi" });
+    assert.deepEqual(startCalls, [
+      ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p22", "--", "--model", "model-x"],
+    ]);
+  });
+
+
+  await t.test('dispatcher action="start" forwards configured input and runtime directory', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "herdr-link-opencode-config-test-"));
+    try {
+      mkdirSync(join(projectRoot, ".agents"));
+      writeFileSync(
+        join(projectRoot, ".agents", "agent_config.json"),
+        JSON.stringify({
+          version: 1,
+          agents: {
+            "work-agent": {
+              variants: [{ kind: "agy", args: ["--model", "configured/model"] }],
+            },
+          },
+        }),
+      );
+      const { gateway } = await gatewayInHerdrEnvironment();
+      const startCalls: string[][] = [];
+      const runner: HerdrRunner = async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") {
+          startCalls.push([...args]);
+          return { stdout: JSON.stringify({ result: { accepted: true } }), stderr: "" };
+        }
+        throw new Error(`unexpected command: ${args.join(" ")}`);
+      };
+      setHerdrRunnerForTests(runner);
+      try {
+        const result = await executeGateway(
+          gateway,
+          { action: "start", name: "worker-config", pane: "wS:p24", config_agent: "work-agent" },
+          "session-config-start",
+          projectRoot,
+        );
+        assert.deepEqual(result, { status: "started", agent: "worker-config", kind: "agy" });
+        assert.deepEqual(startCalls, [
+          ["agent", "start", "worker-config", "--kind", "agy", "--pane", "wS:p24", "--", "--model", "configured/model"],
+        ]);
+      } finally {
+        setHerdrRunnerForTests(undefined);
+      }
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
   await t.test('dispatcher action="send" builds a minimal envelope', async () => {
     const { gateway } = await gatewayInHerdrEnvironment();
     const promptArgs: string[] = [];

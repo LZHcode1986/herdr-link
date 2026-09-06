@@ -9,6 +9,10 @@ import {
   PROTOCOL_ID,
   AGENT_STATES,
   HERDR_LINK_GATEWAY,
+  HERDR_LINK_COMMUNICATION_TOOLS,
+  LINK_ERROR_CODES,
+  START_TOOL_DESCRIPTION,
+  TOOL_START,
   HERDR_LINK_TOOLS,
   TOOL_CLOSE,
   TOOL_PEERS,
@@ -128,14 +132,31 @@ test("tiered naming constants expose gateway and canonical tool names", () => {
   // Tier 0 — the gateway itself.
   assert.equal(HERDR_LINK_GATEWAY, "herdr_link");
   // Tier 1 — canonical tools, each derived from the gateway namespace.
+  assert.equal(TOOL_START, "herdr_link_start");
   assert.equal(TOOL_PEERS, "herdr_link_peers");
   assert.equal(TOOL_SEND, "herdr_link_send");
   assert.equal(TOOL_CLOSE, "herdr_link_close");
-  assert.deepEqual([...HERDR_LINK_TOOLS], [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE]);
+  assert.deepEqual([...HERDR_LINK_TOOLS], [TOOL_START, TOOL_PEERS, TOOL_SEND, TOOL_CLOSE]);
+  assert.deepEqual([...HERDR_LINK_COMMUNICATION_TOOLS], [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE]);
   for (const tool of HERDR_LINK_TOOLS) {
     assert.ok(tool.startsWith(`${HERDR_LINK_GATEWAY}_`), `${tool} must live under the ${HERDR_LINK_GATEWAY} gateway`);
   }
 });
+test("start capability exposes independent input and error vocabulary", () => {
+  assert.match(START_TOOL_DESCRIPTION, /config_agent/);
+  assert.match(START_TOOL_DESCRIPTION, /kind plus args/);
+  assert.match(START_TOOL_DESCRIPTION, /mutually exclusive/);
+  for (const code of [
+    "START_CONFIG_NOT_FOUND",
+    "START_AGENT_NOT_FOUND",
+    "START_CONFIG_INVALID",
+    "START_INPUT_INVALID",
+    "START_FAILED",
+  ] as const) {
+    assert.ok((LINK_ERROR_CODES as readonly string[]).includes(code));
+  }
+});
+
 
 test("AGENT_STATES is the closed state vocabulary and toAgentState maps onto it", () => {
   assert.deepEqual([...AGENT_STATES], ["idle", "working", "blocked", "done", "unknown"]);
@@ -176,9 +197,9 @@ test("PeerDirectory and AgentContext use the blueprint shapes without topology i
   assert.equal(context.agent_status, "idle");
 });
 
-test("COMMUNICATION_CONTRACT names the gateway and all three canonical tools", () => {
+test("COMMUNICATION_CONTRACT names the gateway and the three communication tools", () => {
   assert.ok(COMMUNICATION_CONTRACT.includes(HERDR_LINK_GATEWAY));
-  for (const tool of HERDR_LINK_TOOLS) {
+  for (const tool of HERDR_LINK_COMMUNICATION_TOOLS) {
     assert.ok(COMMUNICATION_CONTRACT.includes(tool), `contract must mention ${tool}`);
   }
 });
@@ -219,6 +240,12 @@ test("PROTOCOL.md §3 and MCP wiring §1.1 exactly match the machine Contract so
   assert.equal(protocolMatch[1], COMMUNICATION_CONTRACT);
   assert.equal(docsMatch[1], COMMUNICATION_CONTRACT);
 });
+test("package allowlist includes the official agent config example", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { files?: unknown };
+  assert.ok(Array.isArray(packageJson.files) && packageJson.files.includes("examples/"));
+  assert.doesNotThrow(() => readFileSync(new URL("../examples/agent_config.example.json", import.meta.url), "utf8"));
+});
+
 
 test("buildInboundWrapper embeds the minimal envelope verbatim as the final line", () => {
   const envelope = buildEnvelope({

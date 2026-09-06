@@ -1,18 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   assertHerdrEnvironment,
   attachCliOutput,
   closeAgentPane,
   ensureSelfName,
   getAgentContext,
-  resetSelfBootstrapForTests,
   getSelf,
   getSelfContext,
   listPeers,
+  resetSelfBootstrapForTests,
+  resetStartStateForTests,
   runHerdr,
   sendMessage,
   setHerdrRunnerForTests,
+  startAgent,
   type HerdrRunner,
 } from "../src/herdr.ts";
 import {
@@ -107,6 +112,25 @@ function directoryHandler(
     if (args[0] === "pane" && args[1] === "close") return { result: { closed: true } };
     throw new Error(`unexpected mock args: ${args.join(" ")}`);
   };
+}
+
+async function withTempProject(
+  config: string | undefined,
+  callback: (projectRoot: string) => Promise<void>,
+ ): Promise<void> {
+  const previousCwd = process.cwd();
+  const projectRoot = mkdtempSync(join(tmpdir(), "herdr-link-start-test-"));
+  try {
+    if (config !== undefined) {
+      mkdirSync(join(projectRoot, ".agents"));
+      writeFileSync(join(projectRoot, ".agents", "agent_config.json"), config);
+    }
+    process.chdir(projectRoot);
+    await callback(projectRoot);
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
 }
 
 function baseDirectory(): Record<string, AgentRow> {
@@ -783,6 +807,275 @@ test("Herdr control layer", async (t) => {
         ["agent", "get", "worker-a"],
         ["pane", "close", "w1:p2"],
       ]);
+    });
+  });
+  await t.test("starts explicitly without project configuration and forwards a complete argv array", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        const receipt = await startAgent({
+          name: "worker-01",
+          pane: "wS:p22",
+          kind: "pi",
+          args: ["--model", "model-x", "--thinking", "high"],
+        });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-01", kind: "pi" });
+        assert.deepEqual(calls.map((call) => call.args), [
+          ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p22", "--", "--model", "model-x", "--thinking", "high"],
+        ]);
+      });
+    });
+  });
+  await t.test("accepts the published JSON example through configured start", async () => {
+    const template = readFileSync(new URL("../examples/agent_config.example.json", import.meta.url), "utf8");
+    assert.doesNotThrow(() => JSON.parse(template));
+    await withTempProject(template, async () => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        const receipt = await startAgent({ name: "worker-template", pane: "wS:p6", config_agent: "example-single" });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-template", kind: "pi" });
+        assert.deepEqual(calls.map((call) => call.args), [
+          ["agent", "start", "worker-template", "--kind", "pi", "--pane", "wS:p6", "--", "--model", "your-provider/your-model", "--thinking", "high"],
+        ]);
+      });
+    });
+  });
+  await t.test("selects configured variants in round-robin order and rereads the JSON", async () => {
+    const config = JSON.stringify({
+      version: 1,
+      agents: {
+        "work-agent": {
+          strategy: "round-robin",
+          variants: [
+            { kind: "pi", args: ["--model", "provider-a/model-a", "--thinking", "high"] },
+            { kind: "agy", args: ["--model", "provider-b/model-b", "--effort", "high"] },
+          ],
+        },
+      },
+    });
+    await withTempProject(config, async (projectRoot) => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        for (const [index, name] of ["worker-a", "worker-b", "worker-c"].entries()) {
+          await startAgent({ name, pane: `wS:p${index + 2}`, config_agent: "work-agent" });
+        }
+        assert.deepEqual(calls.map((call) => call.args), [
+          ["agent", "start", "worker-a", "--kind", "pi", "--pane", "wS:p2", "--", "--model", "provider-a/model-a", "--thinking", "high"],
+          ["agent", "start", "worker-b", "--kind", "agy", "--pane", "wS:p3", "--", "--model", "provider-b/model-b", "--effort", "high"],
+          ["agent", "start", "worker-c", "--kind", "pi", "--pane", "wS:p4", "--", "--model", "provider-a/model-a", "--thinking", "high"],
+        ]);
+        // Every configured start reads the current file; no stale JSON cache survives this edit.
+        writeFileSync(
+          join(projectRoot, ".agents", "agent_config.json"),
+          JSON.stringify({
+            version: 1,
+            agents: {
+              "work-agent": {
+                variants: [{ kind: "codex", args: ["--model", "provider-c/model-c"] }],
+              },
+            },
+          }),
+        );
+        const receipt = await startAgent({ name: "worker-d", pane: "wS:p5", config_agent: "work-agent" });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-d", kind: "codex" });
+        assert.deepEqual(calls.at(-1)!.args, [
+          "agent", "start", "worker-d", "--kind", "codex", "--pane", "wS:p5", "--", "--model", "provider-c/model-c",
+        ]);
+      });
+    });
+  });
+  await t.test("isolates round-robin cursors by config agent and project", async () => {
+    const projectAConfig = JSON.stringify({
+      version: 1,
+      agents: {
+        "work-agent": {
+          strategy: "round-robin",
+          variants: [
+            { kind: "pi", args: ["--model", "project-a/work-a"] },
+            { kind: "agy", args: ["--model", "project-a/work-b"] },
+          ],
+        },
+        "review-agent": {
+          strategy: "round-robin",
+          variants: [
+            { kind: "codex", args: ["--model", "project-a/review-a"] },
+            { kind: "pi", args: ["--model", "project-a/review-b"] },
+          ],
+        },
+      },
+    });
+    const projectBConfig = JSON.stringify({
+      version: 1,
+      agents: {
+        "work-agent": {
+          strategy: "round-robin",
+          variants: [
+            { kind: "agy", args: ["--model", "project-b/work-a"] },
+            { kind: "pi", args: ["--model", "project-b/work-b"] },
+          ],
+        },
+      },
+    });
+    await withTempProject(projectAConfig, async () => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        await startAgent({ name: "a-work-1", pane: "wS:a1", config_agent: "work-agent" });
+        await startAgent({ name: "a-review-1", pane: "wS:a2", config_agent: "review-agent" });
+        await startAgent({ name: "a-work-2", pane: "wS:a3", config_agent: "work-agent" });
+        await withTempProject(projectBConfig, async () => {
+          await startAgent({ name: "b-work-1", pane: "wS:b1", config_agent: "work-agent" });
+          await startAgent({ name: "b-work-2", pane: "wS:b2", config_agent: "work-agent" });
+        });
+        await startAgent({ name: "a-work-3", pane: "wS:a4", config_agent: "work-agent" });
+        assert.deepEqual(calls.map((call) => [call.args[2], call.args[4]]), [
+          ["a-work-1", "pi"],
+          ["a-review-1", "codex"],
+          ["a-work-2", "agy"],
+          ["b-work-1", "agy"],
+          ["b-work-2", "pi"],
+          ["a-work-3", "pi"],
+        ]);
+      });
+    });
+  });
+  await t.test("keeps configured and explicit modes mutually exclusive and fails closed", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        await assert.rejects(
+          startAgent({
+            name: "worker-01",
+            pane: "wS:p22",
+            config_agent: "work-agent",
+            kind: "pi",
+            args: [],
+          } as never),
+          matchesCode("START_INPUT_INVALID"),
+        );
+        await assert.rejects(
+          startAgent({ name: "worker-01", pane: "wS:p22", kind: "pi" } as never),
+          matchesCode("START_INPUT_INVALID"),
+        );
+        await assert.rejects(
+          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "work-agent" }),
+          matchesCode("START_CONFIG_NOT_FOUND"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+  });
+  await t.test("rejects unknown configured entries and malformed configuration schemas", async () => {
+    const validConfig = JSON.stringify({
+      version: 1,
+      agents: {
+        "work-agent": {
+          variants: [{ kind: "pi" }],
+        },
+      },
+    });
+    await withTempProject(validConfig, async () => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "missing-agent" }),
+          matchesCode("START_AGENT_NOT_FOUND"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+
+    const invalidJson = "{ this is not valid json";
+    await withTempProject(invalidJson, async () => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "work-agent" }),
+          matchesCode("START_CONFIG_INVALID"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+
+    const invalidConfig = JSON.stringify({
+      version: 1,
+      agents: {
+        "work-agent": {
+          variants: [{ kind: "pi" }, { kind: "agy" }],
+        },
+      },
+    });
+    await withTempProject(invalidConfig, async () => {
+      resetStartStateForTests();
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "work-agent" }),
+          matchesCode("START_CONFIG_INVALID"),
+        );
+        await assert.rejects(
+          startAgent({ name: "worker-01", pane: "wS:p22", kind: "pi", args: [1] } as never),
+          matchesCode("START_INPUT_INVALID"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+  });
+  await t.test("does not fallback after a failed configured variant and maps Herdr rejection to START_FAILED", async () => {
+    const config = JSON.stringify({
+      version: 1,
+      agents: {
+        "work-agent": {
+          strategy: "round-robin",
+          variants: [
+            { kind: "pi", args: ["--model", "provider-a/model-a"] },
+            { kind: "agy", args: ["--model", "provider-b/model-b"] },
+          ],
+        },
+      },
+    });
+    await withTempProject(config, async () => {
+      resetStartStateForTests();
+      let failed = false;
+      await withMock(async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "start") {
+          if (!failed) {
+            failed = true;
+            throw cliError("agent_not_ready", "pane is not ready");
+          }
+          return { result: { accepted: true } };
+        }
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "worker-a", pane: "wS:p2", config_agent: "work-agent" }),
+          matchesCode("START_FAILED"),
+        );
+        await startAgent({ name: "worker-b", pane: "wS:p3", config_agent: "work-agent" });
+        assert.deepEqual(calls.map((call) => call.args[4]), ["pi", "pi"], "failure keeps the cursor on the selected variant");
+        assert.equal(calls.length, 2, "a failed start must not trigger an automatic fallback start");
+      });
     });
   });
 });

@@ -1,22 +1,22 @@
 # MCP Adapter 接线指南（Claude Code / Codex / AGY）
 
-适用对象：没有原生自定义工具注册面的 Runtime（Claude Code、Codex、AGY）。三者共用同一个零依赖 stdio MCP server（决策见蓝图 ADR-013/ADR-014）；契约注入不经 MCP 通道，按 Runtime 分治。
+适用对象：没有原生自定义工具注册面的 Runtime（Claude Code、Codex、AGY）。三者共用同一个 stdio MCP server（不依赖 MCP SDK，配置使用 Node 原生 `JSON.parse`）；契约注入不经 MCP 通道，按 Runtime 分治。
 
 ## 形态总览
 
 ```text
 dist/herdr-link.mcp.js   单文件 bundle（esbuild 产出，行分隔 JSON-RPC over stdio）
-能力面                    Tier 0 gateway herdr_link + Tier 1 herdr_link_peers / herdr_link_send / herdr_link_close（canonical 名）
+能力面                    Tier 0 gateway herdr_link + Tier 1 herdr_link_start / herdr_link_peers / herdr_link_send / herdr_link_close（canonical 名）
 lazy 呈现                非 Herdr：tools/list = []
                          Herdr dormant：tools/list = [herdr_link]
                          激活（tools/call herdr_link {}）后：发射一次 notifications/tools/list_changed，
-                         本连接内 tools/list = [herdr_link, peers, send, close]；activation 随 stdio 连接存亡
+                         本连接内 tools/list = [herdr_link, start, peers, send, close]；activation 随 stdio 连接存亡
 listChanged fallback     不响应刷新的 Host 继续用 gateway 显式 action 分发：
-                         {"action":"peers"} / {"action":"send","arguments":{...}} /
+                         {"action":"start","arguments":{...}} / {"action":"peers"} / {"action":"send","arguments":{...}} /
                          {"action":"close","arguments":{...}}
 呈现方式                  Claude Code / Codex = mcp__herdr_link__<tool>
                          AGY   = call_mcp_tool(ServerName/ToolName/Arguments)
-错误语义                  五个 Link error 一律 isError:true + "CODE: detail" 文本（PROTOCOL §7）；
+错误语义                  十个 Link error 一律 isError:true + "CODE: detail" 文本（PROTOCOL §7）；
                          环境/transport 失败归类 NOT_IN_HERDR 且不被重包装
 零副作用                  非 Herdr 环境 tools/list 返回 []，模型无感知；stale host 注册表直接调用也返回 NOT_IN_HERDR
 契约/提示注入            dormant 启动只允许短 Tier-0 hint：
@@ -42,7 +42,7 @@ BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 
 运行只依赖 Node ≥ 22.6。server 由各 Runtime 在 Herdr managed pane 内拉起；**`HERDR_*` 环境变量是否透传给 MCP 子进程由各 Runtime 决定**——Codex 必须显式 `env_vars` 转发（§3），AGY 实测原生透传（§4），其余 Runtime 接入时先实测。
 
-**命名约束**：三家 Runtime 的 host registration namespace 均使用 `herdr_link`（下划线；连字符名在 Codex code-mode 工具面有兼容性问题）。Claude Code / Codex 以 prefix 形式呈现、AGY 以 wrapper 形式呈现（PROTOCOL §4.5），契约附录分别由 `buildMcpPrefixedCommunicationContract("herdr_link")` 与 `buildMcpWrapperCommunicationContract("call_mcp_tool", "herdr_link")` 生成（见 §1.2 / §1.3）。
+**命名约束**：三家 Runtime 的 host registration namespace 均使用 `herdr_link`（下划线；连字符名在 Codex code-mode 工具面有兼容性问题）。Claude Code / Codex 以 prefix 形式呈现、AGY 以 wrapper 形式呈现（PROTOCOL §4.6），契约附录分别由 `buildMcpPrefixedCommunicationContract("herdr_link")` 与 `buildMcpWrapperCommunicationContract("call_mcp_tool", "herdr_link")` 生成（见 §1.2 / §1.3）。
 
 ## 1. Active-state Contract 文本（canonical compact 共享 + Runtime presentation 附录）
 
@@ -73,8 +73,10 @@ Herdr Link is the standard interoperability channel between agents running in th
 ```text
 In this runtime Herdr Link starts dormant: only the mcp__herdr_link__herdr_link gateway tool is listed until it is activated.
 - Call mcp__herdr_link__herdr_link once with no arguments ({}); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
-- If the host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{...}}, {"action":"close","arguments":{...}}.
+- If the host did not refresh its tool list, keep dispatching through the gateway: {"action":"start","arguments":{...}}, {"action":"peers"}, {"action":"send","arguments":{...}}, {"action":"close","arguments":{...}}.
+- Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.
 The tools are presented under MCP-prefixed names (the canonical name is always the suffix):
+- herdr_link_start -> mcp__herdr_link__herdr_link_start
 - herdr_link_peers -> mcp__herdr_link__herdr_link_peers
 - herdr_link_send -> mcp__herdr_link__herdr_link_send
 - herdr_link_close -> mcp__herdr_link__herdr_link_close
@@ -87,13 +89,14 @@ AGY 的 model-facing 调用是单一原生 wrapper 携带 ServerName/ToolName/Ar
 ```text
 In this runtime Herdr Link starts dormant: only the Tier 0 gateway (herdr_link) is listed until it is activated.
 - Invoke the gateway once with empty Arguments {} (ToolName "herdr_link"); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
-- If the host did not refresh its tool list, keep dispatching through the gateway with ToolName "herdr_link" and an Arguments object carrying {"action":"peers"|"send"|"close", ...}.
+- If the host did not refresh its tool list, keep dispatching through the gateway with ToolName "herdr_link" and an Arguments object carrying {"action":"start"|"peers"|"send"|"close", ...}.
+- Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.
 
 After activation, Herdr Link MCP tools are invoked through call_mcp_tool.
 
 Use:
 - ServerName: "herdr_link"
-- ToolName: "herdr_link_peers", "herdr_link_send", or "herdr_link_close"
+- ToolName: "herdr_link_start", "herdr_link_peers", "herdr_link_send", or "herdr_link_close"
 - Arguments: the canonical input object for that Herdr Link tool
 ```
 
@@ -195,7 +198,7 @@ printf '%s\n' 'Herdr Link gateway: activate only when the user explicitly asks t
 }
 ```
 
-契约提示以 PreInvocation `ephemeralMessage` hook 为主通道：它只注入短 Tier-0 hint，不在 dormant 阶段生成完整 Contract。激活后由 wrapper 的 active tools/list descriptions 与 gateway dispatch 提供完整语义。实测注记（2026-08-23 transcript 取证）：AGY 的 model-facing MCP 调用是 **wrapper 形态**——`ServerName:"herdr_link"` + `ToolName` 参数化调用（非 `mcp__` 前缀独立函数），符合协议 §4.5 的 wrapper 条款。hooks 配置：
+契约提示以 PreInvocation `ephemeralMessage` hook 为主通道：它只注入短 Tier-0 hint，不在 dormant 阶段生成完整 Contract。激活后由 wrapper 的 active tools/list descriptions 与 gateway dispatch 提供完整语义。实测注记（2026-08-23 transcript 取证）：AGY 的 model-facing MCP 调用是 **wrapper 形态**——`ServerName:"herdr_link"` + `ToolName` 参数化调用（非 `mcp__` 前缀独立函数），符合协议 §4.6 的 wrapper 条款。hooks 配置：
 
 ```json
 {
@@ -252,15 +255,15 @@ printf '%s\n%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":4,"method":"tools/list"}' | node "$BUNDLE"
 ```
 
-预期：`initialize` 结果含 `"capabilities":{"tools":{"listChanged":true}}`；dormant list 仅 `herdr_link`；激活调用返回 `{"status":"active",...}` 且 stdout 在其后出现一行 `"method":"notifications/tools/list_changed"`；再次 `tools/list` 含 gateway + 三个 canonical 工具。对不存在的 peer 调用 `herdr_link_send`（或 gateway action 分发等价形式）应得到 `"isError":true` 且文本以 `PEER_NOT_FOUND:` 开头；跨 workspace 目标同样表现为 `PEER_NOT_FOUND`，不得泄漏目标存在于其他 workspace。
+预期：`initialize` 结果含 `"capabilities":{"tools":{"listChanged":true}}`；dormant list 仅 `herdr_link`；激活调用返回 `{"status":"active",...}` 且 stdout 在其后出现一行 `"method":"notifications/tools/list_changed"`；再次 `tools/list` 含 gateway + 四个 canonical 工具。对不存在的 peer 调用 `herdr_link_send`（或 gateway action 分发等价形式）应得到 `"isError":true` 且文本以 `PEER_NOT_FOUND:` 开头；跨 workspace 目标同样表现为 `PEER_NOT_FOUND`，不得泄漏目标存在于其他 workspace。
 
 ## 6. 行为边界（与 PROTOCOL.md 一致）
 
-- 工具失败是本地 tool failure：`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`，一律 `isError:true` 文本返回，进程不崩溃、不自动重试、不 fallback；
-- activation 是本 stdio 连接内的内存状态：连接断开即回到 dormant，不持久化、不跨连接共享；JSON-RPC 保留错误码（-32700 等）只用于 transport 层，五个 Link 错误码永不映射其上；
-- server 只调用 `agent get` / `agent list` / `agent prompt` / `pane close`，外加仅限 self identity bootstrap（PROTOCOL.md §6.3，目标只能是当前 pane 的未命名 occupant）的 `agent rename <self-pane>`，共五个 CLI 面，argv 数组执行，无 shell；每次通信调用实时解析 live identity/workspace 并强制 same-workspace guard；
+- 工具失败是本地 tool failure：`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED` / `START_CONFIG_NOT_FOUND` / `START_AGENT_NOT_FOUND` / `START_CONFIG_INVALID` / `START_INPUT_INVALID` / `START_FAILED`，一律 `isError:true` 文本返回，进程不崩溃、不自动重试、不 fallback；
+- activation 是本 stdio 连接内的内存状态：连接断开即回到 dormant，不持久化、不跨连接共享；JSON-RPC 保留错误码（-32700 等）只用于 transport 层，Link 错误码永不映射其上；
+- server 只调用 `agent get` / `agent list` / `agent prompt` / `agent start` / `pane close`，外加仅限 self identity bootstrap（PROTOCOL §6.3，目标只能是当前 pane 的未命名 occupant）的 `agent rename <self-pane>`，共六个 CLI 面，argv 数组执行，无 shell；每次通信调用实时解析 live identity/workspace 并强制 same-workspace guard；
 - server 启动时执行一次 `ensureSelfName()`（fire-and-forget，失败静默、稍后以 `SELF_UNNAMED` 呈现）：手动启动且未命名的 agent 无需人工 rename 即可成为可发现 peer；
-- 不提供 agent 创建/调度/回收、workspace/topology 控制等任何 Non-goals 能力；worker 生命周期仍由调用方决定；正常协作不依赖外部 `AGENTS.md` / Skill 补充 Contract。
+- 不提供业务调度、Agent 创建/回收、workspace/topology 控制等任何 Non-goals 能力；`herdr_link_start` 只执行调用方明确的 configured/explicit 启动选择；worker 生命周期其余部分仍由调用方决定；正常协作不依赖外部 `AGENTS.md` / Skill 补充 Contract。
 
 ## 7. 已知坑（Codex/AGY 真机实测）
 

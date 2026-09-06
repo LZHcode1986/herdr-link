@@ -1,6 +1,6 @@
 {
   "name": "herdr-link",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "pi": {
     "extensions": [
       "./src/pi.ts"
@@ -11,12 +11,13 @@
     "herdr",
     "agent-interop"
   ],
-  "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. V1: Pi / OpenCode native adapters + shared stdio MCP server for Claude Code / Codex / AGY.",
+  "description": "Herdr Link — cross-agent interoperability layer for Herdr sessions. Pi / OpenCode native adapters + shared stdio MCP server for Claude Code / Codex / AGY.",
   "files": [
     "PROTOCOL.md",
     "README.md",
     "CHANGELOG.md",
     "docs/mcp-wiring.md",
+    "examples/",
     "dist/",
     "src/",
     "scripts/mcp-probe.mjs"

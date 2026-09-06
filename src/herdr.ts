@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 import {
   AGENT_ERROR_DETAILS,
   buildEnvelope,
@@ -12,6 +14,8 @@ import {
   type LinkErrorCode,
   type PeerDirectory,
   type PeerInfo,
+  type StartAgentInput,
+  type StartAgentReceipt,
 } from "./protocol.ts";
 
 export interface HerdrCommandOutput {
@@ -97,6 +101,233 @@ async function runFor(args: string[], failureCode: LinkErrorCode): Promise<unkno
     if (error instanceof HerdrLinkError) throw error;
     throw operationError(error, failureCode);
   }
+}
+
+interface ValidatedStartVariant {
+  kind: string;
+  args: string[];
+}
+
+interface ConfiguredStartAgent {
+  strategy?: "round-robin";
+  variants: ValidatedStartVariant[];
+}
+
+const startCursors = new Map<string, number>();
+const startLocks = new Map<string, Promise<void>>();
+const START_CONFIG_PATH_PARTS = [".agents", "agent_config.json"] as const;
+const START_INPUT_KEYS = new Set(["name", "pane", "config_agent", "kind", "args"]);
+
+/** @internal Test seam only: clears process-local configured-start state. */
+export function resetStartStateForTests(): void {
+  startCursors.clear();
+  startLocks.clear();
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function startInputError(detail: string): HerdrLinkError {
+  return new HerdrLinkError("START_INPUT_INVALID", detail);
+}
+
+function startConfigError(
+  code: "START_CONFIG_NOT_FOUND" | "START_AGENT_NOT_FOUND" | "START_CONFIG_INVALID",
+  detail: string,
+): HerdrLinkError {
+  return new HerdrLinkError(code, detail);
+}
+
+function validateStartInput(input: unknown):
+  | { mode: "configured"; name: string; pane: string; configAgent: string }
+  | { mode: "explicit"; name: string; pane: string; variant: ValidatedStartVariant } {
+  const value = asRecord(input);
+  if (!value) throw startInputError("start input must be an object");
+  for (const key of Object.keys(value)) {
+    if (!START_INPUT_KEYS.has(key)) throw startInputError(`unknown start field "${key}"`);
+  }
+
+  const name = value.name;
+  if (typeof name !== "string" || !isValidAgentName(name)) {
+    throw startInputError("\"name\" must be a valid Herdr Agent Name");
+  }
+  const pane = value.pane;
+  if (typeof pane !== "string" || pane.trim() === "") {
+    throw startInputError("\"pane\" must be a non-empty pane id");
+  }
+
+  const hasConfigAgent = hasOwn(value, "config_agent");
+  const hasKind = hasOwn(value, "kind");
+  const hasArgs = hasOwn(value, "args");
+  if (hasConfigAgent && (hasKind || hasArgs)) {
+    throw startInputError("config_agent cannot be combined with kind or args");
+  }
+  if (hasConfigAgent) {
+    const configAgent = value.config_agent;
+    if (typeof configAgent !== "string" || configAgent.trim() === "") {
+      throw startInputError("\"config_agent\" must be a non-empty string");
+    }
+    return { mode: "configured", name, pane, configAgent };
+  }
+
+  if (!hasKind || !hasArgs) {
+    throw startInputError("explicit start requires both kind and args");
+  }
+  const kind = value.kind;
+  if (typeof kind !== "string" || kind.trim() === "") {
+    throw startInputError("\"kind\" must be a non-empty string");
+  }
+  const args = value.args;
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
+    throw startInputError("\"args\" must be an array of strings");
+  }
+  return { mode: "explicit", name, pane, variant: { kind, args: [...args] } };
+}
+
+function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedSet.has(key)) throw startConfigError("START_CONFIG_INVALID", `${label} contains unknown field "${key}"`);
+  }
+}
+
+function validateConfiguredDocument(document: unknown): Map<string, ConfiguredStartAgent> {
+  const root = asRecord(document);
+  if (!root) throw startConfigError("START_CONFIG_INVALID", "configuration root must be an object");
+  assertAllowedKeys(root, ["version", "agents"], "configuration root");
+  if (root.version !== 1) throw startConfigError("START_CONFIG_INVALID", "configuration version must be 1");
+
+  const agents = asRecord(root.agents);
+  if (!agents) throw startConfigError("START_CONFIG_INVALID", "agents must be an object");
+
+  const result = new Map<string, ConfiguredStartAgent>();
+  for (const [configAgent, rawEntry] of Object.entries(agents)) {
+    if (configAgent.trim() === "") {
+      throw startConfigError("START_CONFIG_INVALID", "agents contains an empty configuration key");
+    }
+    const entry = asRecord(rawEntry);
+    if (!entry) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} must be an object`);
+    assertAllowedKeys(entry, ["strategy", "variants"], `agents.${configAgent}`);
+
+    const rawVariants = entry.variants;
+    if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants must be non-empty`);
+    }
+    const hasStrategy = hasOwn(entry, "strategy");
+    if (hasStrategy && entry.strategy !== "round-robin") {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.strategy is unsupported`);
+    }
+    if (rawVariants.length > 1 && entry.strategy !== "round-robin") {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} requires strategy round-robin for multiple variants`);
+    }
+
+    const variants: ValidatedStartVariant[] = rawVariants.map((rawVariant, index) => {
+      const variant = asRecord(rawVariant);
+      if (!variant) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}] must be an object`);
+      assertAllowedKeys(variant, ["kind", "args"], `agents.${configAgent}.variants[${index}]`);
+      const kind = variant.kind;
+      if (typeof kind !== "string" || kind.trim() === "") {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}].kind must be non-empty`);
+      }
+      const args = variant.args;
+      if (hasOwn(variant, "args") && (!Array.isArray(args) || !args.every((arg) => typeof arg === "string"))) {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}].args must be an array of strings`);
+      }
+      return { kind, args: Array.isArray(args) ? [...args] : [] };
+    });
+
+    result.set(configAgent, {
+      ...(hasStrategy ? { strategy: "round-robin" as const } : {}),
+      variants,
+    });
+  }
+  return result;
+}
+
+async function loadConfiguredStartAgents(configPath: string): Promise<Map<string, ConfiguredStartAgent>> {
+  let text: string;
+  try {
+    text = await readFile(configPath, "utf8");
+  } catch (error) {
+    const code = asRecord(error)?.code;
+    if (code === "ENOENT") {
+      throw startConfigError("START_CONFIG_NOT_FOUND", "agent_config.json was not found");
+    }
+    throw startConfigError("START_CONFIG_INVALID", "agent_config.json could not be read");
+  }
+
+  let document: unknown;
+  try {
+    document = JSON.parse(text) as unknown;
+  } catch {
+    throw startConfigError("START_CONFIG_INVALID", "agent_config.json is not valid JSON");
+  }
+  return validateConfiguredDocument(document);
+}
+
+async function withStartCursorLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = startLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  startLocks.set(key, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (startLocks.get(key) === current) startLocks.delete(key);
+  }
+}
+
+async function runStart(name: string, pane: string, variant: ValidatedStartVariant): Promise<void> {
+  try {
+    await runHerdr(["agent", "start", name, "--kind", variant.kind, "--pane", pane, "--", ...variant.args]);
+  } catch (error) {
+    // NOT_IN_HERDR is an environment/transport classification; all other
+    // Herdr start rejections belong to the start operation. This also
+    // prevents the shared agent_not_found mapping from becoming PEER_NOT_FOUND.
+    if (error instanceof HerdrLinkError && error.code === "NOT_IN_HERDR") throw error;
+    throw operationError(error, "START_FAILED");
+  }
+}
+
+export interface StartAgentOptions {
+  /** Runtime context directory used to locate the optional project config. */
+  cwd?: string;
+}
+
+/** Starts an Agent from a complete configured entry or a complete explicit launch specification. */
+export async function startAgent(input: StartAgentInput, options: StartAgentOptions = {}): Promise<StartAgentReceipt> {
+  assertHerdrEnvironment();
+  const validated = validateStartInput(input);
+
+  if (validated.mode === "explicit") {
+    await runStart(validated.name, validated.pane, validated.variant);
+    return { status: "started", agent: validated.name, kind: validated.variant.kind };
+  }
+
+  const projectRoot = typeof options.cwd === "string" && options.cwd.trim() !== "" ? options.cwd : process.cwd();
+  const configPath = resolve(projectRoot, ...START_CONFIG_PATH_PARTS);
+  const cursorKey = `${configPath}\u0000${validated.configAgent}`;
+  return withStartCursorLock(cursorKey, async () => {
+    const configuredAgents = await loadConfiguredStartAgents(configPath);
+    const configured = configuredAgents.get(validated.configAgent);
+    if (!configured) {
+      throw startConfigError("START_AGENT_NOT_FOUND", `configured Agent "${validated.configAgent}" was not found`);
+    }
+
+    const current = startCursors.get(cursorKey) ?? 0;
+    const variantIndex = current % configured.variants.length;
+    const variant = configured.variants[variantIndex]!;
+    await runStart(validated.name, validated.pane, variant);
+    if (configured.variants.length > 1) {
+      startCursors.set(cursorKey, (variantIndex + 1) % configured.variants.length);
+    }
+    return { status: "started", agent: validated.name, kind: variant.kind };
+  });
 }
 
 const CLI_ERROR_CODE_MAP: Record<string, LinkErrorCode> = {

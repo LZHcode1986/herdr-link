@@ -6,16 +6,20 @@ import { pathToFileURL } from "node:url";
 
 // src/herdr.ts
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
 var AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 var HERDR_LINK_GATEWAY = "herdr_link";
+var TOOL_START = "herdr_link_start";
 var TOOL_PEERS = "herdr_link_peers";
 var TOOL_SEND = "herdr_link_send";
 var TOOL_CLOSE = "herdr_link_close";
-var HERDR_LINK_TOOLS = [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE];
+var HERDR_LINK_TOOLS = [TOOL_START, TOOL_PEERS, TOOL_SEND, TOOL_CLOSE];
+var HERDR_LINK_COMMUNICATION_TOOLS = [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE];
 var AGENT_STATES = ["idle", "working", "blocked", "done", "unknown"];
 function toAgentState(value) {
   if (typeof value === "string") {
@@ -26,6 +30,7 @@ function toAgentState(value) {
   }
   return "unknown";
 }
+var START_TOOL_DESCRIPTION = "Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.";
 var HerdrLinkError = class extends Error {
   code;
   constructor(code, detail) {
@@ -39,7 +44,12 @@ var AGENT_ERROR_DETAILS = {
   SELF_UNNAMED: "Herdr Link could not establish a stable Agent Name",
   PEER_NOT_FOUND: "target agent is not a live peer",
   SEND_FAILED: "Herdr did not accept message delivery",
-  CLOSE_FAILED: "Herdr pane close failed"
+  CLOSE_FAILED: "Herdr pane close failed",
+  START_CONFIG_NOT_FOUND: "configured Agent start configuration was not found",
+  START_AGENT_NOT_FOUND: "configured Agent start entry was not found",
+  START_CONFIG_INVALID: "configured Agent start configuration is invalid",
+  START_INPUT_INVALID: "Agent start input is invalid",
+  START_FAILED: "Herdr did not accept Agent start"
 };
 function formatAgentFacingError(error, fallbackCode) {
   const code = error instanceof HerdrLinkError ? error.code : fallbackCode;
@@ -111,14 +121,14 @@ var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channe
 function attachCliOutput(error, stdout, stderr) {
   Object.assign(error, { stdout, stderr });
 }
-var defaultHerdrRunner = (file, args) => new Promise((resolve, reject) => {
+var defaultHerdrRunner = (file, args) => new Promise((resolve2, reject) => {
   execFile(file, args, { encoding: "utf8", shell: false }, (error, stdout, stderr) => {
     if (error) {
       attachCliOutput(error, String(stdout), String(stderr));
       reject(error);
       return;
     }
-    resolve({ stdout: String(stdout), stderr: String(stderr) });
+    resolve2({ stdout: String(stdout), stderr: String(stderr) });
   });
 });
 var herdrRunner = defaultHerdrRunner;
@@ -166,6 +176,180 @@ async function runFor(args, failureCode) {
     if (error instanceof HerdrLinkError) throw error;
     throw operationError(error, failureCode);
   }
+}
+var startCursors = /* @__PURE__ */ new Map();
+var startLocks = /* @__PURE__ */ new Map();
+var START_CONFIG_PATH_PARTS = [".agents", "agent_config.json"];
+var START_INPUT_KEYS = /* @__PURE__ */ new Set(["name", "pane", "config_agent", "kind", "args"]);
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+function startInputError(detail) {
+  return new HerdrLinkError("START_INPUT_INVALID", detail);
+}
+function startConfigError(code, detail) {
+  return new HerdrLinkError(code, detail);
+}
+function validateStartInput(input) {
+  const value = asRecord(input);
+  if (!value) throw startInputError("start input must be an object");
+  for (const key of Object.keys(value)) {
+    if (!START_INPUT_KEYS.has(key)) throw startInputError(`unknown start field "${key}"`);
+  }
+  const name = value.name;
+  if (typeof name !== "string" || !isValidAgentName(name)) {
+    throw startInputError('"name" must be a valid Herdr Agent Name');
+  }
+  const pane = value.pane;
+  if (typeof pane !== "string" || pane.trim() === "") {
+    throw startInputError('"pane" must be a non-empty pane id');
+  }
+  const hasConfigAgent = hasOwn(value, "config_agent");
+  const hasKind = hasOwn(value, "kind");
+  const hasArgs = hasOwn(value, "args");
+  if (hasConfigAgent && (hasKind || hasArgs)) {
+    throw startInputError("config_agent cannot be combined with kind or args");
+  }
+  if (hasConfigAgent) {
+    const configAgent = value.config_agent;
+    if (typeof configAgent !== "string" || configAgent.trim() === "") {
+      throw startInputError('"config_agent" must be a non-empty string');
+    }
+    return { mode: "configured", name, pane, configAgent };
+  }
+  if (!hasKind || !hasArgs) {
+    throw startInputError("explicit start requires both kind and args");
+  }
+  const kind = value.kind;
+  if (typeof kind !== "string" || kind.trim() === "") {
+    throw startInputError('"kind" must be a non-empty string');
+  }
+  const args = value.args;
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
+    throw startInputError('"args" must be an array of strings');
+  }
+  return { mode: "explicit", name, pane, variant: { kind, args: [...args] } };
+}
+function assertAllowedKeys(value, allowed, label) {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedSet.has(key)) throw startConfigError("START_CONFIG_INVALID", `${label} contains unknown field "${key}"`);
+  }
+}
+function validateConfiguredDocument(document) {
+  const root = asRecord(document);
+  if (!root) throw startConfigError("START_CONFIG_INVALID", "configuration root must be an object");
+  assertAllowedKeys(root, ["version", "agents"], "configuration root");
+  if (root.version !== 1) throw startConfigError("START_CONFIG_INVALID", "configuration version must be 1");
+  const agents = asRecord(root.agents);
+  if (!agents) throw startConfigError("START_CONFIG_INVALID", "agents must be an object");
+  const result = /* @__PURE__ */ new Map();
+  for (const [configAgent, rawEntry] of Object.entries(agents)) {
+    if (configAgent.trim() === "") {
+      throw startConfigError("START_CONFIG_INVALID", "agents contains an empty configuration key");
+    }
+    const entry = asRecord(rawEntry);
+    if (!entry) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} must be an object`);
+    assertAllowedKeys(entry, ["strategy", "variants"], `agents.${configAgent}`);
+    const rawVariants = entry.variants;
+    if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants must be non-empty`);
+    }
+    const hasStrategy = hasOwn(entry, "strategy");
+    if (hasStrategy && entry.strategy !== "round-robin") {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.strategy is unsupported`);
+    }
+    if (rawVariants.length > 1 && entry.strategy !== "round-robin") {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} requires strategy round-robin for multiple variants`);
+    }
+    const variants = rawVariants.map((rawVariant, index) => {
+      const variant = asRecord(rawVariant);
+      if (!variant) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}] must be an object`);
+      assertAllowedKeys(variant, ["kind", "args"], `agents.${configAgent}.variants[${index}]`);
+      const kind = variant.kind;
+      if (typeof kind !== "string" || kind.trim() === "") {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}].kind must be non-empty`);
+      }
+      const args = variant.args;
+      if (hasOwn(variant, "args") && (!Array.isArray(args) || !args.every((arg) => typeof arg === "string"))) {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}].args must be an array of strings`);
+      }
+      return { kind, args: Array.isArray(args) ? [...args] : [] };
+    });
+    result.set(configAgent, {
+      ...hasStrategy ? { strategy: "round-robin" } : {},
+      variants
+    });
+  }
+  return result;
+}
+async function loadConfiguredStartAgents(configPath) {
+  let text;
+  try {
+    text = await readFile(configPath, "utf8");
+  } catch (error) {
+    const code = asRecord(error)?.code;
+    if (code === "ENOENT") {
+      throw startConfigError("START_CONFIG_NOT_FOUND", "agent_config.json was not found");
+    }
+    throw startConfigError("START_CONFIG_INVALID", "agent_config.json could not be read");
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw startConfigError("START_CONFIG_INVALID", "agent_config.json is not valid JSON");
+  }
+  return validateConfiguredDocument(document);
+}
+async function withStartCursorLock(key, operation) {
+  const previous = startLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve2) => {
+    release = resolve2;
+  });
+  startLocks.set(key, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (startLocks.get(key) === current) startLocks.delete(key);
+  }
+}
+async function runStart(name, pane, variant) {
+  try {
+    await runHerdr(["agent", "start", name, "--kind", variant.kind, "--pane", pane, "--", ...variant.args]);
+  } catch (error) {
+    if (error instanceof HerdrLinkError && error.code === "NOT_IN_HERDR") throw error;
+    throw operationError(error, "START_FAILED");
+  }
+}
+async function startAgent(input, options = {}) {
+  assertHerdrEnvironment();
+  const validated = validateStartInput(input);
+  if (validated.mode === "explicit") {
+    await runStart(validated.name, validated.pane, validated.variant);
+    return { status: "started", agent: validated.name, kind: validated.variant.kind };
+  }
+  const projectRoot = typeof options.cwd === "string" && options.cwd.trim() !== "" ? options.cwd : process.cwd();
+  const configPath = resolve(projectRoot, ...START_CONFIG_PATH_PARTS);
+  const cursorKey = `${configPath}\0${validated.configAgent}`;
+  return withStartCursorLock(cursorKey, async () => {
+    const configuredAgents = await loadConfiguredStartAgents(configPath);
+    const configured = configuredAgents.get(validated.configAgent);
+    if (!configured) {
+      throw startConfigError("START_AGENT_NOT_FOUND", `configured Agent "${validated.configAgent}" was not found`);
+    }
+    const current = startCursors.get(cursorKey) ?? 0;
+    const variantIndex = current % configured.variants.length;
+    const variant = configured.variants[variantIndex];
+    await runStart(validated.name, validated.pane, variant);
+    if (configured.variants.length > 1) {
+      startCursors.set(cursorKey, (variantIndex + 1) % configured.variants.length);
+    }
+    return { status: "started", agent: validated.name, kind: variant.kind };
+  });
 }
 var CLI_ERROR_CODE_MAP = {
   agent_not_found: "PEER_NOT_FOUND",
@@ -266,7 +450,7 @@ function stableName(record) {
 }
 var SELF_PROBE_ATTEMPTS = 3;
 var SELF_PROBE_DELAY_MS = 100;
-var sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var sleepMs = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
 async function fetchSelfRecord(pane) {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -438,11 +622,27 @@ var METHOD_NOT_FOUND = -32601;
 var INVALID_PARAMS = -32602;
 var NORMAL_MESSAGING_RULE = "Use Herdr Link, not raw Herdr CLI, pane ids, or terminal input, for normal inter-agent messaging.";
 var TOOL_DESCRIPTIONS = {
+  [TOOL_START]: `${START_TOOL_DESCRIPTION} ${NORMAL_MESSAGING_RULE}`,
   [TOOL_PEERS]: `Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_SEND]: `Send a herdr-link/1 message to a live named peer in your own workspace; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_CLOSE]: `Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step. ${NORMAL_MESSAGING_RULE}`
 };
 var TOOL_INPUT_SCHEMAS = {
+  [TOOL_START]: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "New Herdr Agent Name" },
+      pane: { type: "string", description: "Existing pane id" },
+      config_agent: { type: "string", description: "Configured Agent key; do not combine with kind or args" },
+      kind: { type: "string", description: "Herdr Agent kind for explicit start" },
+      args: { type: "array", items: { type: "string" }, description: "Complete Herdr Agent arguments for explicit start" }
+    },
+    required: ["name", "pane"],
+    oneOf: [
+      { required: ["config_agent"], not: { anyOf: [{ required: ["kind"] }, { required: ["args"] }] } },
+      { required: ["kind", "args"], not: { required: ["config_agent"] } }
+    ]
+  },
   [TOOL_PEERS]: { type: "object", properties: {} },
   [TOOL_SEND]: {
     type: "object",
@@ -461,20 +661,21 @@ var TOOL_INPUT_SCHEMAS = {
   }
 };
 var FALLBACK_ERROR_CODE = {
+  [TOOL_START]: "START_FAILED",
   [TOOL_PEERS]: "NOT_IN_HERDR",
   [TOOL_SEND]: "SEND_FAILED",
   [TOOL_CLOSE]: "CLOSE_FAILED"
 };
 var GATEWAY_TOOL = {
   name: HERDR_LINK_GATEWAY,
-  description: 'Herdr Link gateway. Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Cross-agent messaging starts dormant: call this tool once with no arguments ({}) to activate it for this session \u2014 the host is notified via notifications/tools/list_changed and herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{"to":...,"message":...}}, or {"action":"close","arguments":{"agent":...}}.',
+  description: 'Herdr Link gateway. Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Cross-agent control starts dormant: call this tool once with no arguments ({}) to activate it for this session \u2014 the host is notified via notifications/tools/list_changed and herdr_link_start / herdr_link_peers / herdr_link_send / herdr_link_close become available as regular tools. If your host did not refresh its tool list, keep dispatching through the gateway: {"action":"start","arguments":{...}}, {"action":"peers"}, {"action":"send","arguments":{"to":...,"message":...}}, or {"action":"close","arguments":{"agent":...}}.',
   inputSchema: {
     type: "object",
     properties: {
       action: {
         type: "string",
-        enum: ["activate", "peers", "send", "close"],
-        description: 'Omit or use "activate" to turn the session on; other values dispatch the corresponding peers, send, or close capability.'
+        enum: ["activate", "start", "peers", "send", "close"],
+        description: 'Omit or use "activate" to turn the session on; other values dispatch the corresponding start, peers, send, or close capability.'
       },
       arguments: {
         type: "object",
@@ -547,6 +748,7 @@ function createRequestHandler(deps = {}) {
   const runPeers = deps.listPeers ?? listPeers;
   const runSend = deps.sendMessage ?? sendMessage;
   const runClose = deps.closeAgentPane ?? closeAgentPane;
+  const runStart2 = deps.startAgent ?? startAgent;
   const notify = deps.notify ?? stdoutNotificationSink;
   let activated = false;
   function activateSession() {
@@ -572,6 +774,8 @@ function createRequestHandler(deps = {}) {
   }
   async function executeCanonical(canonicalName, args) {
     switch (canonicalName) {
+      case TOOL_START:
+        return await runStart2(args);
       case TOOL_PEERS:
         return await runPeers();
       case TOOL_SEND: {
@@ -602,15 +806,15 @@ function createRequestHandler(deps = {}) {
       activateSession();
       return callSuccess(id, {
         status: "active",
-        capabilities: ["peers", "send", "close"]
+        capabilities: ["start", "peers", "send", "close"]
       });
     }
-    if (typeof action !== "string" || !["peers", "send", "close"].includes(action)) {
+    if (typeof action !== "string" || !["start", "peers", "send", "close"].includes(action)) {
       return fail(id, INVALID_PARAMS, `Unknown gateway action: ${String(action)}`);
     }
-    const canonicalName = action === "peers" ? TOOL_PEERS : action === "send" ? TOOL_SEND : TOOL_CLOSE;
+    const canonicalName = action === "start" ? TOOL_START : action === "peers" ? TOOL_PEERS : action === "send" ? TOOL_SEND : TOOL_CLOSE;
     activateSession();
-    const dispatchArgs = isRecord(args.arguments) ? args.arguments : args;
+    const dispatchArgs = isRecord(args.arguments) ? args.arguments : Object.fromEntries(Object.entries(args).filter(([key]) => key !== "action"));
     return await callCanonicalTool(id, canonicalName, dispatchArgs);
   }
   async function callTool(id, params) {
@@ -710,15 +914,18 @@ function contractWithAppendix(appendix) {
 ${appendix}`;
 }
 function buildMcpPrefixedCommunicationContract(namespace) {
-  const [peers, send, close] = HERDR_LINK_TOOLS.map(
+  const [peers, send, close] = HERDR_LINK_COMMUNICATION_TOOLS.map(
     (name) => mcpPresentedToolName(name, namespace)
   );
+  const start = mcpPresentedToolName(TOOL_START, namespace);
   const gateway = mcpPresentedToolName(HERDR_LINK_GATEWAY, namespace);
   return contractWithAppendix(
     `In this runtime Herdr Link starts dormant: only the ${gateway} gateway tool is listed until it is activated.
 - Call ${gateway} once with no arguments ({}); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
-- If the host did not refresh its tool list, keep dispatching through the gateway: {"action":"peers"}, {"action":"send","arguments":{...}}, {"action":"close","arguments":{...}}.
+- If the host did not refresh its tool list, keep dispatching through the gateway: {"action":"start","arguments":{...}}, {"action":"peers"}, {"action":"send","arguments":{...}}, {"action":"close","arguments":{...}}.
+- ${START_TOOL_DESCRIPTION}
 The tools are presented under MCP-prefixed names (the canonical name is always the suffix):
+- herdr_link_start -> ${start}
 - herdr_link_peers -> ${peers}
 - herdr_link_send -> ${send}
 - herdr_link_close -> ${close}`
@@ -728,13 +935,14 @@ function buildMcpWrapperCommunicationContract(wrapperName, serverName) {
   return contractWithAppendix(
     `In this runtime Herdr Link starts dormant: only the Tier 0 gateway (${HERDR_LINK_GATEWAY}) is listed until it is activated.
 - Invoke the gateway once with empty Arguments {} (ToolName "${HERDR_LINK_GATEWAY}"); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
-- If the host did not refresh its tool list, keep dispatching through the gateway with ToolName "${HERDR_LINK_GATEWAY}" and an Arguments object carrying {"action":"peers"|"send"|"close", ...}.
+- If the host did not refresh its tool list, keep dispatching through the gateway with ToolName "${HERDR_LINK_GATEWAY}" and an Arguments object carrying {"action":"start"|"peers"|"send"|"close", ...}.
+- ${START_TOOL_DESCRIPTION}
 
 After activation, Herdr Link MCP tools are invoked through ${wrapperName}.
 
 Use:
 - ServerName: "${serverName}"
-- ToolName: "herdr_link_peers", "herdr_link_send", or "herdr_link_close"
+- ToolName: "herdr_link_start", "herdr_link_peers", "herdr_link_send", or "herdr_link_close"
 - Arguments: the canonical input object for that Herdr Link tool`
   );
 }

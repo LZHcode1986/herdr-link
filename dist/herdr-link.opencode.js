@@ -3,7 +3,9 @@ import { tool } from "@opencode-ai/plugin";
 
 // src/herdr.ts
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { resolve } from "node:path";
 
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
@@ -19,6 +21,7 @@ function toAgentState(value) {
   }
   return "unknown";
 }
+var START_TOOL_DESCRIPTION = "Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.";
 var HerdrLinkError = class extends Error {
   code;
   constructor(code, detail) {
@@ -32,7 +35,12 @@ var AGENT_ERROR_DETAILS = {
   SELF_UNNAMED: "Herdr Link could not establish a stable Agent Name",
   PEER_NOT_FOUND: "target agent is not a live peer",
   SEND_FAILED: "Herdr did not accept message delivery",
-  CLOSE_FAILED: "Herdr pane close failed"
+  CLOSE_FAILED: "Herdr pane close failed",
+  START_CONFIG_NOT_FOUND: "configured Agent start configuration was not found",
+  START_AGENT_NOT_FOUND: "configured Agent start entry was not found",
+  START_CONFIG_INVALID: "configured Agent start configuration is invalid",
+  START_INPUT_INVALID: "Agent start input is invalid",
+  START_FAILED: "Herdr did not accept Agent start"
 };
 function formatAgentFacingError(error, fallbackCode) {
   const code = error instanceof HerdrLinkError ? error.code : fallbackCode;
@@ -104,14 +112,14 @@ var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channe
 function attachCliOutput(error, stdout, stderr) {
   Object.assign(error, { stdout, stderr });
 }
-var defaultHerdrRunner = (file, args) => new Promise((resolve, reject) => {
+var defaultHerdrRunner = (file, args) => new Promise((resolve2, reject) => {
   execFile(file, args, { encoding: "utf8", shell: false }, (error, stdout, stderr) => {
     if (error) {
       attachCliOutput(error, String(stdout), String(stderr));
       reject(error);
       return;
     }
-    resolve({ stdout: String(stdout), stderr: String(stderr) });
+    resolve2({ stdout: String(stdout), stderr: String(stderr) });
   });
 });
 var herdrRunner = defaultHerdrRunner;
@@ -159,6 +167,180 @@ async function runFor(args, failureCode) {
     if (error instanceof HerdrLinkError) throw error;
     throw operationError(error, failureCode);
   }
+}
+var startCursors = /* @__PURE__ */ new Map();
+var startLocks = /* @__PURE__ */ new Map();
+var START_CONFIG_PATH_PARTS = [".agents", "agent_config.json"];
+var START_INPUT_KEYS = /* @__PURE__ */ new Set(["name", "pane", "config_agent", "kind", "args"]);
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+function startInputError(detail) {
+  return new HerdrLinkError("START_INPUT_INVALID", detail);
+}
+function startConfigError(code, detail) {
+  return new HerdrLinkError(code, detail);
+}
+function validateStartInput(input) {
+  const value = asRecord(input);
+  if (!value) throw startInputError("start input must be an object");
+  for (const key of Object.keys(value)) {
+    if (!START_INPUT_KEYS.has(key)) throw startInputError(`unknown start field "${key}"`);
+  }
+  const name = value.name;
+  if (typeof name !== "string" || !isValidAgentName(name)) {
+    throw startInputError('"name" must be a valid Herdr Agent Name');
+  }
+  const pane = value.pane;
+  if (typeof pane !== "string" || pane.trim() === "") {
+    throw startInputError('"pane" must be a non-empty pane id');
+  }
+  const hasConfigAgent = hasOwn(value, "config_agent");
+  const hasKind = hasOwn(value, "kind");
+  const hasArgs = hasOwn(value, "args");
+  if (hasConfigAgent && (hasKind || hasArgs)) {
+    throw startInputError("config_agent cannot be combined with kind or args");
+  }
+  if (hasConfigAgent) {
+    const configAgent = value.config_agent;
+    if (typeof configAgent !== "string" || configAgent.trim() === "") {
+      throw startInputError('"config_agent" must be a non-empty string');
+    }
+    return { mode: "configured", name, pane, configAgent };
+  }
+  if (!hasKind || !hasArgs) {
+    throw startInputError("explicit start requires both kind and args");
+  }
+  const kind = value.kind;
+  if (typeof kind !== "string" || kind.trim() === "") {
+    throw startInputError('"kind" must be a non-empty string');
+  }
+  const args = value.args;
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
+    throw startInputError('"args" must be an array of strings');
+  }
+  return { mode: "explicit", name, pane, variant: { kind, args: [...args] } };
+}
+function assertAllowedKeys(value, allowed, label) {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedSet.has(key)) throw startConfigError("START_CONFIG_INVALID", `${label} contains unknown field "${key}"`);
+  }
+}
+function validateConfiguredDocument(document) {
+  const root = asRecord(document);
+  if (!root) throw startConfigError("START_CONFIG_INVALID", "configuration root must be an object");
+  assertAllowedKeys(root, ["version", "agents"], "configuration root");
+  if (root.version !== 1) throw startConfigError("START_CONFIG_INVALID", "configuration version must be 1");
+  const agents = asRecord(root.agents);
+  if (!agents) throw startConfigError("START_CONFIG_INVALID", "agents must be an object");
+  const result = /* @__PURE__ */ new Map();
+  for (const [configAgent, rawEntry] of Object.entries(agents)) {
+    if (configAgent.trim() === "") {
+      throw startConfigError("START_CONFIG_INVALID", "agents contains an empty configuration key");
+    }
+    const entry = asRecord(rawEntry);
+    if (!entry) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} must be an object`);
+    assertAllowedKeys(entry, ["strategy", "variants"], `agents.${configAgent}`);
+    const rawVariants = entry.variants;
+    if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants must be non-empty`);
+    }
+    const hasStrategy = hasOwn(entry, "strategy");
+    if (hasStrategy && entry.strategy !== "round-robin") {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.strategy is unsupported`);
+    }
+    if (rawVariants.length > 1 && entry.strategy !== "round-robin") {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} requires strategy round-robin for multiple variants`);
+    }
+    const variants = rawVariants.map((rawVariant, index) => {
+      const variant = asRecord(rawVariant);
+      if (!variant) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}] must be an object`);
+      assertAllowedKeys(variant, ["kind", "args"], `agents.${configAgent}.variants[${index}]`);
+      const kind = variant.kind;
+      if (typeof kind !== "string" || kind.trim() === "") {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}].kind must be non-empty`);
+      }
+      const args = variant.args;
+      if (hasOwn(variant, "args") && (!Array.isArray(args) || !args.every((arg) => typeof arg === "string"))) {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants[${index}].args must be an array of strings`);
+      }
+      return { kind, args: Array.isArray(args) ? [...args] : [] };
+    });
+    result.set(configAgent, {
+      ...hasStrategy ? { strategy: "round-robin" } : {},
+      variants
+    });
+  }
+  return result;
+}
+async function loadConfiguredStartAgents(configPath) {
+  let text;
+  try {
+    text = await readFile(configPath, "utf8");
+  } catch (error) {
+    const code = asRecord(error)?.code;
+    if (code === "ENOENT") {
+      throw startConfigError("START_CONFIG_NOT_FOUND", "agent_config.json was not found");
+    }
+    throw startConfigError("START_CONFIG_INVALID", "agent_config.json could not be read");
+  }
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch {
+    throw startConfigError("START_CONFIG_INVALID", "agent_config.json is not valid JSON");
+  }
+  return validateConfiguredDocument(document);
+}
+async function withStartCursorLock(key, operation) {
+  const previous = startLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve2) => {
+    release = resolve2;
+  });
+  startLocks.set(key, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (startLocks.get(key) === current) startLocks.delete(key);
+  }
+}
+async function runStart(name, pane, variant) {
+  try {
+    await runHerdr(["agent", "start", name, "--kind", variant.kind, "--pane", pane, "--", ...variant.args]);
+  } catch (error) {
+    if (error instanceof HerdrLinkError && error.code === "NOT_IN_HERDR") throw error;
+    throw operationError(error, "START_FAILED");
+  }
+}
+async function startAgent(input, options = {}) {
+  assertHerdrEnvironment();
+  const validated = validateStartInput(input);
+  if (validated.mode === "explicit") {
+    await runStart(validated.name, validated.pane, validated.variant);
+    return { status: "started", agent: validated.name, kind: validated.variant.kind };
+  }
+  const projectRoot = typeof options.cwd === "string" && options.cwd.trim() !== "" ? options.cwd : process.cwd();
+  const configPath = resolve(projectRoot, ...START_CONFIG_PATH_PARTS);
+  const cursorKey = `${configPath}\0${validated.configAgent}`;
+  return withStartCursorLock(cursorKey, async () => {
+    const configuredAgents = await loadConfiguredStartAgents(configPath);
+    const configured = configuredAgents.get(validated.configAgent);
+    if (!configured) {
+      throw startConfigError("START_AGENT_NOT_FOUND", `configured Agent "${validated.configAgent}" was not found`);
+    }
+    const current = startCursors.get(cursorKey) ?? 0;
+    const variantIndex = current % configured.variants.length;
+    const variant = configured.variants[variantIndex];
+    await runStart(validated.name, validated.pane, variant);
+    if (configured.variants.length > 1) {
+      startCursors.set(cursorKey, (variantIndex + 1) % configured.variants.length);
+    }
+    return { status: "started", agent: validated.name, kind: variant.kind };
+  });
 }
 var CLI_ERROR_CODE_MAP = {
   agent_not_found: "PEER_NOT_FOUND",
@@ -259,7 +441,7 @@ function stableName(record) {
 }
 var SELF_PROBE_ATTEMPTS = 3;
 var SELF_PROBE_DELAY_MS = 100;
-var sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var sleepMs = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
 async function fetchSelfRecord(pane) {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -422,6 +604,7 @@ async function closeAgentPane(agentName) {
 
 // src/opencode.ts
 var GATEWAY_PRESENTATION_APPENDIX = `In this runtime the active Herdr Link capabilities are dispatched through the single herdr_link gateway.
+- Use herdr_link with action "start": ${START_TOOL_DESCRIPTION}
 - Use herdr_link with action "peers" to list live same-workspace agents.
 - Use herdr_link with action "send" with to and message to deliver an inter-agent message or ordinary reply.
 - Use herdr_link with action "close" and an Agent Name only after any final send returns status "sent", in a later tool step.`;
@@ -439,7 +622,7 @@ function failWith(error, fallbackCode) {
 }
 function failInvalidAction(action) {
   throw new Error(
-    `INVALID_ACTION: herdr_link action "${action}" is not supported; use "peers", "send", "close", or omit action (call with {}) to activate.`
+    `INVALID_ACTION: herdr_link action "${action}" is not supported; use "start", "peers", "send", "close", or omit action (call with {}) to activate.`
   );
 }
 var herdrLinkPlugin = async () => {
@@ -452,21 +635,34 @@ var herdrLinkPlugin = async () => {
   return {
     tool: {
       [HERDR_LINK_GATEWAY]: tool({
-        description: `Herdr Link cross-agent communication gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "peers" to list live same-workspace agents, "send" with to + message to deliver an inter-agent message or ordinary reply, or "close" with agent to close a named agent's pane \u2014 only after any final send has returned status "sent", and in a later tool step.`,
+        description: `Herdr Link cross-agent control gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "start" with name + pane and either config_agent or complete kind + args, action "peers" to list live same-workspace agents, action "send" with to + message to deliver an inter-agent message or ordinary reply, or action "close" with agent to close a named agent's pane \u2014 start modes are mutually exclusive and close is only after any final send has returned status "sent", in a later tool step.`,
         args: {
-          action: tool.schema.enum(["peers", "send", "close"]).optional().describe(
-            'Operation to run: "peers" | "send" | "close". Omit action entirely (call with {}) to activate Herdr Link for this session.'
+          action: tool.schema.enum(["start", "peers", "send", "close"]).optional().describe(
+            'Operation to run: "start", "peers", "send", or "close". Omit action entirely (call with {}) to activate Herdr Link for this session.'
           ),
           to: tool.schema.string().optional().describe('Target agent name; required for action "send".'),
           message: tool.schema.string().optional().describe('Message payload; required for action "send".'),
-          agent: tool.schema.string().optional().describe('Target agent name; required for action "close".')
+          agent: tool.schema.string().optional().describe('Target agent name; required for action "close".'),
+          name: tool.schema.string().optional().describe('New Agent Name; required for action "start".'),
+          pane: tool.schema.string().optional().describe('Existing pane id; required for action "start".'),
+          config_agent: tool.schema.string().optional().describe('Configured Agent key for action "start"; do not combine with kind or args.'),
+          kind: tool.schema.string().optional().describe('Herdr Agent kind for explicit action "start".'),
+          args: tool.schema.array(tool.schema.string()).optional().describe('Complete Herdr Agent arguments for explicit action "start".')
         },
         async execute(args, context) {
           if (args.action === void 0) {
             activatedSessions.add(context.sessionID);
-            return jsonResult({ status: "active", capabilities: ["peers", "send", "close"] });
+            return jsonResult({ status: "active", capabilities: ["start", "peers", "send", "close"] });
           }
           activatedSessions.add(context.sessionID);
+          if (args.action === "start") {
+            const startInput = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "action"));
+            try {
+              return jsonResult(await startAgent(startInput, { cwd: context.directory }));
+            } catch (error) {
+              failWith(error, "START_FAILED");
+            }
+          }
           if (args.action === "peers") {
             try {
               return jsonResult(await listPeers());

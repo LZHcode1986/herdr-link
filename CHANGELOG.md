@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-06
+
+### Added
+
+- **`herdr_link_start`**: a shared configured/explicit Agent start primitive for Pi, OpenCode, and MCP. Configured mode selects a complete entry from `.agents/agent_config.json`; explicit mode forwards complete `kind` and `args` without partial overrides or merge semantics.
+- Configured entries support one or more launch variants with opt-in `round-robin` selection, a process-local cursor isolated by project and config key, and no retry/fallback after a failed start.
+- Official `examples/agent_config.example.json` template and README guidance for project configuration and AI Agent decisions between configured and explicit start.
+
+### Changed
+
+- Project start configuration uses the standard JSON format and built-in `JSON.parse()`, providing a simple native configuration path for target projects.
+- Published the official configuration template through the npm package allowlist and added template/schema, package, and MCP working-directory coverage.
+
 ## [0.3.1] - 2026-09-01
 
 ### Changed

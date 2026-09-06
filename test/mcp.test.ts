@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,7 @@ import {
 import {
   COMMUNICATION_CONTRACT,
   HERDR_LINK_GATEWAY,
+  TOOL_START,
   HERDR_LINK_TOOLS,
   HerdrLinkError,
   type PeerDirectory,
@@ -57,6 +58,7 @@ function handlerWith(overrides: McpServerDeps = {}): HandlerWithNotifications {
     listPeers: () => ok(PEER_DIRECTORY_FIXTURE),
     sendMessage: () => ok({ status: "sent" as const, id: "hl_unit_1", to: "worker-a" }),
     closeAgentPane: (agent: string) => ok({ status: "closed" as const, agent }),
+    startAgent: () => ok({ status: "started" as const, agent: "worker-start", kind: "pi" }),
     notify: (notification) => {
       notifications.push(notification);
     },
@@ -206,7 +208,7 @@ test("MCP server request handler", async (t) => {
       (activated?.result as { content: Array<{ text: string }> }).content[0]!.text,
     ) as Record<string, unknown>;
     assert.equal(payload.status, "active");
-    assert.deepEqual(payload.capabilities, ["peers", "send", "close"]);
+    assert.deepEqual(payload.capabilities, ["start", "peers", "send", "close"]);
 
     assertSingleListChanged(handler.notifications);
 
@@ -338,6 +340,51 @@ test("MCP server request handler", async (t) => {
       params: { name: "herdr_link_send", arguments: { to: "worker-b", message: "hi" } },
     });
     assert.deepEqual(captured, [["worker-b", "hi"]]);
+  });
+
+  await t.test("canonical start and gateway start share the same execution seam", async () => {
+    const captured: unknown[] = [];
+    const handler = handlerWith({
+      startAgent: (input) => {
+        captured.push(input);
+        return ok({ status: "started" as const, agent: input.name, kind: "pi" });
+      },
+    });
+
+    const direct = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: TOOL_START,
+        arguments: { name: "worker-a", pane: "wS:p2", kind: "pi", args: ["--model", "model-x"] },
+      },
+    });
+    assert.deepEqual(
+      JSON.parse((direct?.result as { content: Array<{ text: string }> }).content[0]!.text),
+      { status: "started", agent: "worker-a", kind: "pi" },
+    );
+
+    const fallback = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: HERDR_LINK_GATEWAY,
+        arguments: {
+          action: "start",
+          arguments: { name: "worker-b", pane: "wS:p3", config_agent: "work-agent" },
+        },
+      },
+    });
+    assert.deepEqual(
+      JSON.parse((fallback?.result as { content: Array<{ text: string }> }).content[0]!.text),
+      { status: "started", agent: "worker-b", kind: "pi" },
+    );
+    assert.deepEqual(captured, [
+      { name: "worker-a", pane: "wS:p2", kind: "pi", args: ["--model", "model-x"] },
+      { name: "worker-b", pane: "wS:p3", config_agent: "work-agent" },
+    ]);
   });
 
   await t.test("gateway action-dispatch reaches the canonical executor (fallback for non-refreshing hosts)", async () => {
@@ -511,7 +558,7 @@ test("MCP server request handler", async (t) => {
     assert.equal(result.content[0]!.text, "PEER_NOT_FOUND: target agent is not a live peer");
   });
 
-  await t.test("declares per-runtime presentation appendices (§4.4, lazy presentation)", () => {
+  await t.test("declares per-runtime presentation appendices (§4.6, lazy presentation)", () => {
     // Namespace is host-specific and must be passed explicitly (serverInfo.name
     // is a different concern); the Codex wiring uses the underscore form.
     for (const canonical of [...HERDR_LINK_TOOLS, HERDR_LINK_GATEWAY]) {
@@ -593,8 +640,8 @@ class McpServerProcess {
   private readonly pending: Array<Record<string, unknown>> = [];
   private readonly waiters: Array<(line: Record<string, unknown>) => void> = [];
 
-  constructor(args: string[], env: NodeJS.ProcessEnv) {
-    this.child = spawn(process.execPath, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+  constructor(args: string[], env: NodeJS.ProcessEnv, cwd?: string) {
+    this.child = spawn(process.execPath, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     const reader = createInterface({ input: this.child.stdout! });
     reader.on("line", (line) => {
       const trimmed = line.trim();
@@ -667,6 +714,7 @@ function writeFakeHerdrBinary(directory: string): string {
     [
       "#!/bin/sh",
       'case "$1 $2" in',
+      '  "agent start") printf \'{"result":{"accepted":true}}\';;',
       '  "agent get")',
       '    if [ "$3" = "self-pane" ]; then',
       '      printf \'{"result":{"agent":{"name":"brain","workspace_id":"ws-main","pane_id":"w9:p1"}}}\'',
@@ -808,7 +856,7 @@ test("spawned MCP server over real stdio", async (t) => {
           (activated.result as { content: Array<{ text: string }> }).content[0]!.text,
         ) as Record<string, unknown>;
         assert.equal(activationPayload.status, "active");
-        assert.deepEqual(activationPayload.capabilities, ["peers", "send", "close"]);
+        assert.deepEqual(activationPayload.capabilities, ["start", "peers", "send", "close"]);
 
         // Active: gateway + canonical Tier 1 tools.
         const active = await server.request({ jsonrpc: "2.0", id: 3, method: "tools/list" });
@@ -817,9 +865,26 @@ test("spawned MCP server over real stdio", async (t) => {
           [HERDR_LINK_GATEWAY, ...HERDR_LINK_TOOLS],
         );
 
-        const peers = await server.request({
+        const started = await server.request({
           jsonrpc: "2.0",
           id: 4,
+          method: "tools/call",
+          params: {
+            name: TOOL_START,
+            arguments: { name: "worker-start", pane: "w9:p2", kind: "pi", args: ["--model", "model-x"] },
+          },
+        });
+        const startedResult = started.result as { content: Array<{ text: string }>; isError?: boolean };
+        assert.notEqual(startedResult.isError, true);
+        assert.deepEqual(JSON.parse(startedResult.content[0]!.text), {
+          status: "started",
+          agent: "worker-start",
+          kind: "pi",
+        });
+
+        const peers = await server.request({
+          jsonrpc: "2.0",
+          id: 5,
           method: "tools/call",
           params: { name: "herdr_link_peers" },
         });
@@ -832,7 +897,7 @@ test("spawned MCP server over real stdio", async (t) => {
 
         const sent = await server.request({
           jsonrpc: "2.0",
-          id: 5,
+          id: 6,
           method: "tools/call",
           params: { name: "herdr_link_send", arguments: { to: "worker-mcp", message: "hello from mcp smoke" } },
         });
@@ -845,7 +910,7 @@ test("spawned MCP server over real stdio", async (t) => {
 
         const rejected = await server.request({
           jsonrpc: "2.0",
-          id: 6,
+          id: 7,
           method: "tools/call",
           params: { name: "herdr_link_send", arguments: { to: "ghost", message: "hi" } },
         });
@@ -856,7 +921,7 @@ test("spawned MCP server over real stdio", async (t) => {
         // Host never refreshed its registry? Gateway dispatch still works.
         const dispatchedClose = await server.request({
           jsonrpc: "2.0",
-          id: 7,
+          id: 8,
           method: "tools/call",
           params: {
             name: HERDR_LINK_GATEWAY,
@@ -871,6 +936,66 @@ test("spawned MCP server over real stdio", async (t) => {
         // Exactly one list_changed for the whole session.
         assert.equal(server.countListChanged(), 1);
 
+        server.endInput();
+        assert.equal(await server.waitForExit(), 0);
+      } finally {
+        server.destroy();
+      }
+    },
+  );
+  await t.test(
+    "inside Herdr: configured start reads agent_config.json from the MCP process cwd",
+    async () => {
+      const projectRoot = mkdtempSync(join(scratch, "configured-start-"));
+      mkdirSync(join(projectRoot, ".agents"));
+      writeFileSync(
+        join(projectRoot, ".agents", "agent_config.json"),
+        JSON.stringify({
+          version: 1,
+          agents: {
+            "work-agent": {
+              variants: [{ kind: "pi", args: ["--model", "configured/model"] }],
+            },
+          },
+        }),
+      );
+      const server = new McpServerProcess(
+        [...flags, SERVER_ENTRY],
+        {
+          ...herdrFreeEnv(),
+          HERDR_ENV: "1",
+          HERDR_BIN_PATH: fakeBinary,
+          HERDR_PANE_ID: "self-pane",
+        },
+        projectRoot,
+      );
+      try {
+        const dormant = await server.request({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+        assert.deepEqual(
+          (dormant.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name),
+          [HERDR_LINK_GATEWAY],
+        );
+        server.fireAndForget({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: {
+            name: TOOL_START,
+            arguments: { name: "worker-config", pane: "w9:p3", config_agent: "work-agent" },
+          },
+        });
+        const notification = await server.next("configured start list_changed notification");
+        assert.deepEqual(notification, { jsonrpc: "2.0", method: TOOLS_LIST_CHANGED });
+        const started = await server.next("configured start response");
+        assert.equal(started.id, 2);
+        const startedResult = started.result as { content: Array<{ text: string }>; isError?: boolean };
+        assert.notEqual(startedResult.isError, true);
+        assert.deepEqual(JSON.parse(startedResult.content[0]!.text), {
+          status: "started",
+          agent: "worker-config",
+          kind: "pi",
+        });
+        assert.equal(server.countListChanged(), 1);
         server.endInput();
         assert.equal(await server.waitForExit(), 0);
       } finally {

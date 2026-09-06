@@ -4,11 +4,11 @@
  * The model-facing surface is exactly one tiny `herdr_link` dispatcher tool,
  * in both dormant and active states. Calling it with no arguments (`{}`)
  * idempotently activates the channel for the CURRENT session and returns
- * `{ status: "active", capabilities: ["peers", "send", "close"] }`; while a
+ * `{ status: "active", capabilities: ["start", "peers", "send", "close"] }`; while a
  * session is active the same gateway executes deterministic actions
- * (`action`: "peers" | "send" | "close") against the core control layer and
+ * (`action`: "start" | "peers" | "send" | "close") against the core control layer and
  * the compact Communication Contract is injected into that session's system
- * prompt. The three Tier 1 tools are never registered as always-resident
+ * prompt. The Tier 1 capabilities are never registered as always-resident
  * surfaces.
  *
  * API basis (public @opencode-ai/plugin 1.18.x only):
@@ -30,17 +30,20 @@
  */
 import { tool, type Plugin } from "@opencode-ai/plugin";
 
-import { closeAgentPane, ensureSelfName, listPeers, sendMessage } from "./herdr.ts";
+import { closeAgentPane, ensureSelfName, listPeers, sendMessage, startAgent } from "./herdr.ts";
 import {
   COMMUNICATION_CONTRACT,
   HERDR_LINK_GATEWAY,
   HerdrLinkError,
+  START_TOOL_DESCRIPTION,
   formatAgentFacingError,
   type LinkErrorCode,
+  type StartAgentInput,
 } from "./protocol.ts";
 
 /** Runtime-specific active presentation; the semantic Contract remains canonical. */
 const GATEWAY_PRESENTATION_APPENDIX = `In this runtime the active Herdr Link capabilities are dispatched through the single herdr_link gateway.
+- Use herdr_link with action "start": ${START_TOOL_DESCRIPTION}
 - Use herdr_link with action "peers" to list live same-workspace agents.
 - Use herdr_link with action "send" with to and message to deliver an inter-agent message or ordinary reply.
 - Use herdr_link with action "close" and an Agent Name only after any final send returns status "sent", in a later tool step.`;
@@ -67,7 +70,7 @@ function failWith(error: unknown, fallbackCode: LinkErrorCode): never {
 /** Dispatcher-level usage guard for actions rejected by the schema anyway. */
 function failInvalidAction(action: string): never {
   throw new Error(
-    `INVALID_ACTION: herdr_link action "${action}" is not supported; use "peers", "send", "close", or omit action (call with {}) to activate.`,
+    `INVALID_ACTION: herdr_link action "${action}" is not supported; use "start", "peers", "send", "close", or omit action (call with {}) to activate.`,
   );
 }
 
@@ -90,16 +93,16 @@ export const herdrLinkPlugin: Plugin = async () => {
     tool: {
       [HERDR_LINK_GATEWAY]: tool({
         description:
-          "Herdr Link cross-agent communication gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. " +
+          "Herdr Link cross-agent control gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. " +
           'Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. ' +
-            'Then pass action "peers" to list live same-workspace agents, "send" with to + message to deliver an inter-agent message or ordinary reply, or "close" with agent to close a named agent\'s pane — ' +
-            'only after any final send has returned status "sent", and in a later tool step.',
+            'Then pass action "start" with name + pane and either config_agent or complete kind + args, action "peers" to list live same-workspace agents, action "send" with to + message to deliver an inter-agent message or ordinary reply, or action "close" with agent to close a named agent\'s pane — ' +
+            'start modes are mutually exclusive and close is only after any final send has returned status "sent", in a later tool step.',
         args: {
           action: tool.schema
-            .enum(["peers", "send", "close"])
+            .enum(["start", "peers", "send", "close"])
             .optional()
             .describe(
-              'Operation to run: "peers" | "send" | "close". Omit action entirely (call with {}) to activate Herdr Link for this session.',
+              'Operation to run: "start", "peers", "send", or "close". Omit action entirely (call with {}) to activate Herdr Link for this session.',
             ),
           to: tool.schema
             .string()
@@ -113,15 +116,44 @@ export const herdrLinkPlugin: Plugin = async () => {
             .string()
             .optional()
             .describe('Target agent name; required for action "close".'),
+          name: tool.schema
+            .string()
+            .optional()
+            .describe('New Agent Name; required for action "start".'),
+          pane: tool.schema
+            .string()
+            .optional()
+            .describe('Existing pane id; required for action "start".'),
+          config_agent: tool.schema
+            .string()
+            .optional()
+            .describe('Configured Agent key for action "start"; do not combine with kind or args.'),
+          kind: tool.schema
+            .string()
+            .optional()
+            .describe('Herdr Agent kind for explicit action "start".'),
+          args: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe('Complete Herdr Agent arguments for explicit action "start".'),
         },
         async execute(args, context) {
           if (args.action === undefined) {
             activatedSessions.add(context.sessionID);
-            return jsonResult({ status: "active", capabilities: ["peers", "send", "close"] });
+            return jsonResult({ status: "active", capabilities: ["start", "peers", "send", "close"] });
           }
           // Gateway action dispatch is also an explicit activation path for
           // hosts that bypass the empty gateway call or do not refresh schemas.
           activatedSessions.add(context.sessionID);
+
+          if (args.action === "start") {
+            const startInput = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "action"));
+            try {
+              return jsonResult(await startAgent(startInput as unknown as StartAgentInput, { cwd: context.directory }));
+            } catch (error) {
+              failWith(error, "START_FAILED");
+            }
+          }
 
           if (args.action === "peers") {
             try {

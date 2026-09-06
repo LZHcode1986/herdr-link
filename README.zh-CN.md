@@ -7,7 +7,7 @@
 
 [English](./README.md) | **简体中文**
 
-Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 workspace 内的 Agent 可以互相发现、交换协议化消息、关闭已完成的 pane——通过一个 **lazy gateway** 暴露 **3 项核心能力**，**零学习成本**。
+Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 workspace 内的 Agent 可以按调用方明确选择启动 Agent、互相发现、交换协议化消息、关闭已完成的 pane——通过一个 **lazy gateway** 暴露 **4 项核心能力**，**零学习成本**。
 
 提供 Pi（原生扩展）、OpenCode（插件 bundle）以及任意支持 MCP 的 Runtime 如 Claude Code / Codex / AGY（共享 stdio MCP server）的 Adapter。线上格式为 `herdr-link/1` 协议，唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)。
 
@@ -19,7 +19,7 @@ Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 
 - 这些推理过程**每次使用都在消耗 token 并增加延迟**；
 - 使用知识靠模型**反复自行推导**，而不是直接交给它。
 
-Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 3 项核心能力，并自动注入一份紧凑的通信契约：
+Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 4 项核心能力，并自动注入一份紧凑的通信契约：
 
 | | 官方 Herdr Skill 路线 | 使用 Herdr Link |
 |---|---|---|
@@ -31,7 +31,7 @@ Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 
 一句话总结：
 
 - **更少消耗。** 无需阅读、无需推导。dormant 态下模型只看到一个极小的 `herdr_link` gateway——无契约、无 schema；激活后也只注入一段简短契约，而不是一本手册。
-- **更快通讯。** 发现对端、发送协议化消息、关闭 pane 都是一次直接的工具调用——中间没有任何多步 CLI 编排。
+- **更快控制。** 启动 Agent、发现对端、发送协议化消息或关闭 pane 都是一次直接的工具调用——中间没有任何多步 CLI 编排。
 - **无感接入（零推理）。** 用户显式提出 Herdr 需求、或收到 inbound `herdr-link/1` 消息时自动激活；完成通过普通的 `herdr_link_send`：将指定结果发给 `from`；未指定结果时成功后精确发送 `done`；失败/阻塞时发送简短说明；只有明确要求不回复时才不发送。`done` 只是普通消息，不是 ACK、任务状态或投递回执。
 
 ## 工作方式
@@ -40,6 +40,8 @@ Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 
 
 ```text
 Agent A → herdr_link {}                    # 激活（幂等）
+Agent A → herdr_link_start(name, pane, config_agent) # 配置模式
+Agent A → herdr_link_start(name, pane, kind, args)         # 显式模式
 Agent A → herdr_link_send(to="B", ...)     # status "sent"
 Agent B → （收到 inbound wrapper）herdr_link {}   # 自动激活触发
 Agent B → herdr_link_send(to="A", message="结果或 done")
@@ -47,9 +49,106 @@ Agent B → herdr_link_send(to="A", message="结果或 done")
 ```
 
 - **Dormant 层**：只有 `herdr_link` gateway 可见；空参 `{}` 调用一次性激活当前 session（幂等、纯内存态）。
-- **Active 层**：`herdr_link_peers`、`herdr_link_send`、`herdr_link_close`，外加紧凑 Communication Contract。每次调用都经 Herdr 实时解析身份/workspace 并执行同 workspace guard。
+- **Active 层**：`herdr_link_start`、`herdr_link_peers`、`herdr_link_send`、`herdr_link_close`，外加紧凑 Communication Contract。每次通信调用都经 Herdr 实时解析身份/workspace 并执行同 workspace guard。
 
-Herdr Link 不决定 Agent 应该做什么，也不负责 Agent 的创建、调度、模型选择或回收——它只是消息层。
+## 启动 Agent
+
+> `herdr_link_start` 只执行调用方已经作出的启动选择，不选择业务角色，也不创建 pane。
+
+### 项目级 start 配置
+
+项目级配置是可选的，固定位置为：
+
+```text
+<project-root>/.agents/agent_config.json
+```
+
+GitHub 仓库和 npm 包都包含官方模板：
+
+```text
+examples/agent_config.example.json
+```
+
+在目标项目中使用模板：
+
+```bash
+mkdir -p .agents
+cp /path/to/agent_config.example.json .agents/agent_config.json
+```
+
+复制命令只是便利方式；下面同时给出完整 schema，因此 npm 用户不需要知道包实际安装目录：
+
+```json
+{
+  "version": 1,
+  "agents": {
+    "example-single": {
+      "variants": [
+        {
+          "kind": "pi",
+          "args": [
+            "--model",
+            "your-provider/your-model",
+            "--thinking",
+            "high"
+          ]
+        }
+      ]
+    },
+    "example-round-robin": {
+      "strategy": "round-robin",
+      "variants": [
+        {
+          "kind": "pi",
+          "args": [
+            "--model",
+            "provider-a/model-a",
+            "--thinking",
+            "high"
+          ]
+        },
+        {
+          "kind": "pi",
+          "args": [
+            "--model",
+            "provider-b/model-b",
+            "--thinking",
+            "high"
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+需要长期复用的启动方式使用 configured start：`{"name":"worker-01","pane":"wS:p22","config_agent":"example-single"}`。`config_agent` 是 `agents` 下由项目自行定义的 key，Herdr Link 不解释其业务含义。
+
+一次性启动使用 explicit start，不修改项目配置：`{"name":"worker-01","pane":"wS:p22","kind":"pi","args":["--model","model-x","--thinking","high"]}`。两种模式严格互斥；配置调用不能只覆盖 `kind` 或 `args`。
+
+#### 人类用户与 AI Agent 的配置规则
+
+人类用户或 AI Agent 创建、修改 `.agents/agent_config.json` 时：
+
+1. 长期或重复使用的启动方式写入 `agents.<config-key>`。
+2. `<config-key>` 由项目自行命名，例如 `work-agent`、`reviewer`、`research-agent`、`fast-worker`；Herdr Link 不赋予它业务含义。
+3. 每个 configured entry 至少包含一个完整的 `variant`。
+4. 每个 variant 必须包含非空 `kind`。
+5. `args` 如果存在，必须是字符串数组，并直接放在 `herdr agent start ... --` 之后传递。
+6. 只有一个 variant 时不需要 `strategy`。
+7. 多个 variants 必须使用 `"strategy": "round-robin"`。
+8. 不要创建半填写 entry 并期待 `herdr_link_start` 运行时补齐；不支持 partial override、merge 或猜测缺失值。
+9. 用户只要求这一次使用某组参数时，不要修改配置文件，应使用 explicit start。
+10. “以后默认这样启动”或“以后让这个 worker 在 A/B 之间轮换”等持久偏好，才适合修改配置文件。
+
+决策关系：
+
+| 用户意图 | 项目文件 | 启动模式 |
+|---|---|---|
+| 长期 / 重复启动方式 | 写入 `.agents/agent_config.json` | configured |
+| 一次性 / 临时启动参数 | 不修改文件 | explicit |
+
+Herdr Link 不决定 Agent 应该做什么，也不创建 pane、调度工作、选择模型或回收 Agent。`start` 只执行调用方提交的配置或显式启动选择；其余能力是消息层。
 
 ## 安装
 
@@ -72,7 +171,7 @@ cp src/herdr.ts src/protocol.ts ~/.pi/agent/extensions/herdr-link/
 # 或：pi --extension /path/to/herdr-link/src/pi.ts
 ```
 
-安装后 Adapter 注册 `herdr_link` gateway 与三个 Tier 1 工具；每个 session 开始时 Tier 1 处于 inactive，模型调用 `herdr_link {}` 后启用并注入契约。
+安装后 Adapter 注册 `herdr_link` gateway 与四个 Tier 1 工具；每个 session 开始时 Tier 1 处于 inactive，模型调用 `herdr_link {}` 后启用并注入契约。
 
 ### OpenCode（单文件插件）
 
@@ -84,11 +183,11 @@ cp "$(npm root -g)/herdr-link/dist/herdr-link.opencode.js" \
    ~/.config/opencode/plugins/herdr-link.js
 ```
 
-OpenCode 没有按 session 启停工具的 API，因此 Adapter 采用**single-gateway dispatcher** 呈现：`{}` 激活，之后 `{"action":"peers"|"send"|"close", ...}` 分发到同一控制层。契约只注入已激活 session 的 system prompt（按 `sessionID` 记忆的内存态；server 重启回到 dormant）。
+OpenCode 没有按 session 启停工具的 API，因此 Adapter 采用**single-gateway dispatcher** 呈现：`{}` 激活，之后 `{"action":"start"|"peers"|"send"|"close", ...}` 分发到同一控制层。`start` 使用 `name + pane + config_agent` 或完整的 `name + pane + kind + args`，两种模式不合并。契约只注入已激活 session 的 system prompt（按 `sessionID` 记忆的内存态；server 重启回到 dormant）。
 
 ### Claude Code / Codex / AGY（共享 stdio MCP server）
 
-没有原生自定义工具注册面的 Runtime 共用同一个零依赖 stdio MCP server，以本包的 `bin` 发布：
+没有原生自定义工具注册面的 Runtime 共用同一个 stdio MCP server（不依赖 MCP SDK，配置使用 Node 原生 `JSON.parse`），以本包的 `bin` 发布：
 
 ```bash
 npx -y herdr-link           # 在 stdio 上启动 MCP server
@@ -111,7 +210,7 @@ MCP 同样是惰性呈现：非 Herdr 环境 `tools/list` 返回空集；Herdr m
 - 非 Herdr managed pane 中所有 Adapter 均为完全 no-op：Pi/OpenCode 不注册任何工具，MCP 返回空工具集；
 - Herdr 环境 dormant 态下，模型侧只有 `herdr_link` gateway 可见；
 - **Self identity bootstrap**（PROTOCOL.md §6.3）：用户手动启动、已被 Herdr 识别但尚无合法 Agent Name 的 agent，会被自动赋一个生成的 `hl-*` 名字（Adapter 启动时执行一次 `ensureSelfName()`，通信路径内另有 fallback）。已有名字绝不改写、不持久化；bootstrap 失败时 Link 以 `SELF_UNNAMED` 报错；
-- 运行期失败通过 Link error 返回（`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED`）。
+- 运行期失败通过 Link error 返回（`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED` / `START_CONFIG_NOT_FOUND` / `START_AGENT_NOT_FOUND` / `START_CONFIG_INVALID` / `START_INPUT_INVALID` / `START_FAILED`）。
 
 ## 错误模型
 
@@ -122,6 +221,11 @@ MCP 同样是惰性呈现：非 Herdr 环境 `tools/list` 返回空集；Herdr m
 | `PEER_NOT_FOUND` | 目标不是当前 workspace 内的 live named peer（不存在/非法名/其他 workspace——对模型不可区分） |
 | `SEND_FAILED` | guard 通过后 Herdr 未接受 message prompt |
 | `CLOSE_FAILED` | 目标已解析到 pane，但 Herdr pane close 失败 |
+| `START_CONFIG_NOT_FOUND` | 配置模式找不到 `.agents/agent_config.json` |
+| `START_AGENT_NOT_FOUND` | `config_agent` 不在配置的 `agents` 映射中 |
+| `START_CONFIG_INVALID` | JSON、schema、variants 或 strategy 非法 |
+| `START_INPUT_INVALID` | start 字段缺失、类型错误或两种模式混用 |
+| `START_FAILED` | Herdr 拒绝或启动 Agent 失败 |
 
 错误是本地 tool failure，不是跨 Agent 消息类型；Link 不提供 ACK、wait、poll、task/pending 状态、自动重试或 fallback。
 
@@ -142,7 +246,7 @@ npm run build:mcp           # dist/herdr-link.mcp.js
 ```text
 PROTOCOL.md                  协议唯一规范（Envelope、两级能力面、Contract、工具语义、错误模型）
 src/protocol.ts              协议核心：类型、envelope/wrapper 构建、错误、COMMUNICATION_CONTRACT
-src/herdr.ts                 Herdr CLI 控制层：live identity/workspace 解析、same-workspace guard
+src/herdr.ts                 Herdr CLI 控制层：configured/explicit Agent start、JSON 配置解析、cursor、live identity/workspace 解析
 src/pi.ts                    Pi Runtime Adapter：gateway + deferred Tier 1（setActiveTools），激活后注入契约
 src/opencode.ts              OpenCode Runtime Adapter：single-gateway dispatcher + 按 sessionID 契约注入
 src/mcp.ts                   共享 stdio MCP server：JSON-RPC、惰性工具列表、gateway dispatch
@@ -153,9 +257,9 @@ scripts/mcp-probe.mjs        stdio 握手排障探针
 
 分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线。activation 是各 Adapter 内存中的 session 局部状态：不持久化、不跨 session 恢复。
 
-## 范围与非目标（V1）
+## 范围与非目标
 
-Herdr Link 是同一 workspace 内的消息互操作层，不是 Agent 生命周期或任务管理系统。它不提供 agent 创建/调度/回收、模型选择、workflow/task/stage 状态、业务结果 schema/evidence/receipt/review、ACK/wait/poll/retry/pending-request 语义或可靠投递保证、持久队列或跨 session 持久化、跨机器传输、权限审批、离线投递、**跨 workspace 的 discovery/send/close**（属于官方 Herdr Skill / CLI 控制面），或 workspace/topology 管理。业务 payload 放入 `message` 字段；Link 不解释其语义。完整范围以 [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) 为准。
+Herdr Link 是同一 workspace 内的互操作层，不是业务调度器或任务管理系统。它只提供调用方明确选择的 configured/explicit Agent start execution primitive；不负责业务角色选择、pane 创建/规划、Agent 调度/回收、模型选择、workflow/task/stage 状态、业务结果 schema/evidence/receipt/review、ACK/wait/poll/retry/pending-request 语义或可靠投递保证、持久队列或跨 session 状态、跨机器传输、权限审批、离线投递、**跨 workspace 的 discovery/send/close**（属于官方 Herdr Skill / CLI 控制面），或 workspace/topology 管理。业务 payload 放入 `message` 字段；Link 不解释其语义。完整范围以 [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) 为准。
 
 ## 许可证
 

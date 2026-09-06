@@ -3,8 +3,8 @@
  *
  * Tier 0 (dormant): with the three Herdr environment variables present, the
  * adapter registers everything but keeps the model-facing surface down to the
- * tiny `herdr_link` gateway. The three Tier 1 tools
- * (`herdr_link_peers`/`herdr_link_send`/`herdr_link_close`) stay inactive and
+ * tiny `herdr_link` gateway. The four Tier 1 tools
+ * (`herdr_link_start`/`herdr_link_peers`/`herdr_link_send`/`herdr_link_close`) stay inactive and
  * no Communication Contract is injected.
  *
  * Tier 1 (active): calling the gateway with `{}` idempotently activates the
@@ -27,13 +27,27 @@
 import type { ExtensionAPI, ToolExecutionMode } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { closeAgentPane, ensureSelfName, listPeers, sendMessage } from "./herdr.ts";
-import { COMMUNICATION_CONTRACT, formatAgentFacingError } from "./protocol.ts";
+import { closeAgentPane, ensureSelfName, listPeers, sendMessage, startAgent } from "./herdr.ts";
+import {
+  COMMUNICATION_CONTRACT,
+  HERDR_LINK_TOOLS,
+  START_TOOL_DESCRIPTION,
+  TOOL_START,
+  type StartAgentInput,
+  formatAgentFacingError,
+} from "./protocol.ts";
 
-const TIER1_TOOL_NAMES = ["herdr_link_peers", "herdr_link_send", "herdr_link_close"] as const;
+const TIER1_TOOL_NAMES = HERDR_LINK_TOOLS;
 const TIER1_TOOL_SET = new Set<string>(TIER1_TOOL_NAMES);
 
 const GATEWAY_PARAMETERS = Type.Object({});
+const START_PARAMETERS = Type.Object({
+  name: Type.String(),
+  pane: Type.String(),
+  config_agent: Type.Optional(Type.String()),
+  kind: Type.Optional(Type.String()),
+  args: Type.Optional(Type.Array(Type.String())),
+});
 const PEERS_PARAMETERS = Type.Object({});
 const SEND_PARAMETERS = Type.Object({
   to: Type.String(),
@@ -51,7 +65,14 @@ function toolResult(value: object) {
   };
 }
 
-function rethrowToolError(error: unknown, fallbackCode: "NOT_IN_HERDR" | "SEND_FAILED" | "CLOSE_FAILED"): never {
+function rethrowToolError(
+  error: unknown,
+  fallbackCode:
+    | "NOT_IN_HERDR"
+    | "START_FAILED"
+    | "SEND_FAILED"
+    | "CLOSE_FAILED",
+): never {
   const toolError = new Error(formatAgentFacingError(error, fallbackCode), { cause: error });
   throw toolError;
 }
@@ -73,6 +94,20 @@ export default function (pi: ExtensionAPI): void {
   // setActiveTools), kept initially inactive by the session_start hook below.
   // Their descriptions alone carry the canonical affordances; prompt metadata
   // is intentionally omitted (see module doc).
+  pi.registerTool({
+    name: TOOL_START,
+    label: "Herdr Link Start",
+    description: START_TOOL_DESCRIPTION,
+    parameters: START_PARAMETERS,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        return toolResult(await startAgent(params as StartAgentInput, { cwd: ctx.cwd }));
+      } catch (error) {
+        rethrowToolError(error, "START_FAILED");
+      }
+    },
+  });
+
   pi.registerTool({
     name: "herdr_link_peers",
     label: "Herdr Link Peers",
@@ -125,17 +160,17 @@ export default function (pi: ExtensionAPI): void {
   });
 
   // --- Tier 0 gateway: the only model-visible Herdr surface while dormant.
-  // It performs activation only; it never executes peers/send/close work.
+  // It performs activation only; it never executes start/peers/send/close work.
   pi.registerTool({
     name: "herdr_link",
     label: "Herdr Link",
     description:
-      "Activate the Herdr Link channel only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with empty arguments {} before using Herdr Link; this enables herdr_link_peers, herdr_link_send, and herdr_link_close.",
-    promptSnippet: "Activate the Herdr Link cross-agent channel (peers/send/close).",
+      "Activate the Herdr Link channel only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with empty arguments {} before using Herdr Link; this enables herdr_link_start, herdr_link_peers, herdr_link_send, and herdr_link_close.",
+    promptSnippet: "Activate the Herdr Link cross-agent channel (start/peers/send/close).",
     parameters: GATEWAY_PARAMETERS,
     async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
       activateChannel();
-      return toolResult({ status: "active", capabilities: ["peers", "send", "close"] });
+      return toolResult({ status: "active", capabilities: ["start", "peers", "send", "close"] });
     },
   });
 

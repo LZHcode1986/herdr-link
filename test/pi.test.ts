@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -161,7 +164,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     // referenced by setActiveTools, so all four exist after load…
     assert.deepEqual(
       tools.map((tool) => tool.name).sort(),
-      ["herdr_link", "herdr_link_close", "herdr_link_peers", "herdr_link_send"],
+      ["herdr_link", "herdr_link_close", "herdr_link_peers", "herdr_link_send", "herdr_link_start"],
     );
     assert.deepEqual([...handlers.keys()].sort(), ["before_agent_start", "session_start"]);
 
@@ -185,7 +188,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     assert.match(gateway.description, /handling an inbound Herdr Link message/);
     assert.ok(typeof gateway.promptSnippet === "string");
 
-    for (const name of ["herdr_link_peers", "herdr_link_send", "herdr_link_close"]) {
+    for (const name of ["herdr_link_start", "herdr_link_peers", "herdr_link_send", "herdr_link_close"]) {
       const tool = findTool(tools, name);
       assert.equal(tool.promptGuidelines, undefined, `${name} must not carry promptGuidelines`);
       assert.equal(tool.promptSnippet, undefined, `${name} must rely on its description`);
@@ -215,7 +218,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       const firstActivation = await gateway.execute("gw-1", {}, undefined, undefined, NO_CTX);
       assert.deepEqual(parsedText(firstActivation as never), {
         status: "active",
-        capabilities: ["peers", "send", "close"],
+        capabilities: ["start", "peers", "send", "close"],
       });
 
       // Activation merges additively into the current active set.
@@ -224,6 +227,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
         "read",
         "bash",
         "herdr_link",
+        "herdr_link_start",
         "herdr_link_peers",
         "herdr_link_send",
         "herdr_link_close",
@@ -233,7 +237,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       const secondActivation = await gateway.execute("gw-2", {}, undefined, undefined, NO_CTX);
       assert.deepEqual(parsedText(secondActivation as never), {
         status: "active",
-        capabilities: ["peers", "send", "close"],
+        capabilities: ["start", "peers", "send", "close"],
       });
       assert.equal(activeToolCalls.length, 2);
       assert.deepEqual(cliCalls, []);
@@ -241,7 +245,68 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       setHerdrRunnerForTests(undefined);
     }
   });
+  await t.test("Tier 1: start forwards explicit mode to the shared control layer", async () => {
+    await withHerdrMock((args) => {
+      if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+    }, async (cliCalls) => {
+      useHerdrEnv();
+      const { pi, tools } = fakePi();
+      piExtension(pi);
+      const start = findTool(tools, "herdr_link_start");
+      const result = (await start.execute(
+        "start-1",
+        { name: "worker-01", pane: "wS:p22", kind: "pi", args: ["--model", "model-x"] },
+        undefined,
+        undefined,
+        NO_CTX,
+      )) as { content: Array<{ text: string }>; details: unknown };
+      assert.deepEqual(parsedText(result), { status: "started", agent: "worker-01", kind: "pi" });
+      assert.deepEqual(result.details, parsedText(result));
+      assert.deepEqual(cliCalls.map((call) => call.args), [
+        ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p22", "--", "--model", "model-x"],
+      ]);
+    });
+  });
 
+  await t.test("Tier 1: start forwards configured mode and runtime cwd to shared control layer", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "herdr-link-pi-config-test-"));
+    try {
+      mkdirSync(join(projectRoot, ".agents"));
+      writeFileSync(
+        join(projectRoot, ".agents", "agent_config.json"),
+        JSON.stringify({
+          version: 1,
+          agents: {
+            "work-agent": {
+              variants: [{ kind: "pi", args: ["--model", "configured/model"] }],
+            },
+          },
+        }),
+      );
+      await withHerdrMock((args) => {
+        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
+        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+      }, async (cliCalls) => {
+        const { pi, tools } = fakePi();
+        piExtension(pi);
+        const start = findTool(tools, "herdr_link_start");
+        const result = (await start.execute(
+          "start-config-1",
+          { name: "worker-config", pane: "wS:p23", config_agent: "work-agent" },
+          undefined,
+          undefined,
+          { cwd: projectRoot } as ExtensionContext,
+        )) as { content: Array<{ text: string }>; details: unknown };
+        assert.deepEqual(parsedText(result), { status: "started", agent: "worker-config", kind: "pi" });
+        assert.deepEqual(cliCalls.map((call) => call.args), [
+          ["agent", "start", "worker-config", "--kind", "pi", "--pane", "wS:p23", "--", "--model", "configured/model"],
+        ]);
+      });
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
   await t.test("Contract injection: absent while dormant, compact once active", async () => {
     useHerdrEnv();
     const { pi, tools, handlers, dispatch } = fakePi();

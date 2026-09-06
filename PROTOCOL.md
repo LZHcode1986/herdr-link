@@ -64,7 +64,7 @@ V1 不定义：`task_id`、`status`、`result`、`error`、`runtime`、`model`�
 Herdr Link 的模型可见面分两个状态：
 
 - **Dormant**（默认）：Adapter 已注册但未激活。模型侧只呈现极小的 Tier 0 gateway（§4.1）；**不注入任何 Communication Contract**，不呈现 Tier 1 工具的完整 schema/description。
-- **Active**：Tier 0 gateway 被调用后（触发条件见 §6.2），Adapter 使本 runtime session 对模型呈现语义等价的 Active Contract，并使 peers/send/close 对模型可用；激活在本 runtime session 内保持，直到 session 结束。
+- **Active**：Tier 0 gateway 被调用后（触发条件见 §6.2），Adapter 使本 runtime session 对模型呈现语义等价的 Active Contract，并使 start/peers/send/close 对模型可用；激活在本 runtime session 内保持，直到 session 结束。
 
 Active 状态下，所有 Runtime Adapter 必须使本节规则的语义对 Agent 完整可见并暴露 §4 定义的能力。可通过 system-prompt injection、active tool schema/description、gateway presentation 或这些机制的组合实现；Active Contract 与工具 schema/description 共同构成完整且唯一的 Agent-facing 使用权威。符合规范的部署不得依赖外部 `AGENTS.md`、Skill、手工 prompt 或 Herdr CLI 指令补全正常通信知识。允许根据 Runtime 的呈现机制调整表现形式（例如 gateway dispatch 形态可将同名规则表达为对 `herdr_link` action 的说明），但以下规则不可改变：
 
@@ -89,7 +89,7 @@ Herdr Link is the standard interoperability channel between agents running in th
 ### 4.1 Tier 0：`herdr_link` gateway
 
 - 输入：`{}`（无参数）。
-- 输出：`{ "status": "active", "capabilities": ["peers", "send", "close"] }`。
+- 输出：`{ "status": "active", "capabilities": ["start", "peers", "send", "close"] }`。
 - 规范：
   1. gateway 是 dormant 状态下唯一的 Herdr Link discoverability surface；
   2. 幂等：重复调用仍返回 active；
@@ -97,7 +97,22 @@ Herdr Link is the standard interoperability channel between agents running in th
   4. gateway 本身不做 peer discovery、不发消息、不关 pane；
   5. 调用 gateway 不要求当前 Agent 已拥有 Agent Name。
 
-### 4.2 Tier 1：`herdr_link_peers`
+### 4.2 Tier 1：`herdr_link_start`
+
+> 在调用方已经决定启动 Agent 的前提下，在指定的现有 pane 中执行 Herdr `agent.start`。
+
+- 输入必须包含 `{ "name": string, "pane": string }`，并且只能选择以下一种完整参数来源：
+  - **配置模式**：增加 `config_agent: string`；从当前 runtime context 的 cwd 下 `.agents/agent_config.json` 读取 `agents[config_agent]`。
+  - **显式模式**：增加 `kind: string` 与 `args: string[]`；`kind + args` 原样作为 Herdr 启动参数。
+- `config_agent` 不得与 `kind` 或 `args` 同时出现；不支持 partial override 或 merge。
+- 配置文件是可选的；显式模式不读取配置文件。
+- 配置文件格式为 `version: 1` 与 `agents` 映射。每个 entry 必须有非空 `variants`；variant 必须有非空 `kind`，`args` 若存在必须为字符串数组。
+- 一个 entry 有多个 variants 时必须声明 `strategy: round-robin`；cursor 按项目配置与 `config_agent` 隔离，仅保存在当前进程内，并在启动成功后推进。
+- 每次配置模式调用都重新读取当前配置；启动失败不自动切换 variant、retry 或 fallback。
+- 首版只接受已有 pane，不负责创建 tab/pane 或规划 topology。
+- 输出：`{ "status": "started", "agent": string, "kind": string }`。
+
+### 4.3 Tier 1：`herdr_link_peers`
 
 - 输入：无。
 - 输出：
@@ -118,7 +133,7 @@ Herdr Link is the standard interoperability channel between agents running in th
   - 不返回 workspace_id / pane_id / tab_id / terminal ID；
   - `state` 仅供观察：不排序优先级、不解释业务含义、**不作为 send / close 的前置条件**。
 
-### 4.3 Tier 1：`herdr_link_send`
+### 4.4 Tier 1：`herdr_link_send`
 
 - 输入：`{ "to": string, "message": string }`；`to` 与 `message` 必须满足 §2.3；
 - 输出：`{ "status": "sent", "id": string, "to": string }`
@@ -129,7 +144,7 @@ Herdr Link is the standard interoperability channel between agents running in th
   - 不等待 reply；不自动 poll；不维护 pending request 状态；不执行 retry policy；
   - 投递给 Herdr `agent prompt` 的内容是 §2 所述的 self-describing inbound wrapper，Envelope 本身逐字不变。
 
-### 4.4 Tier 1：`herdr_link_close`
+### 4.5 Tier 1：`herdr_link_close`
 
 - 输入：`{ "agent": string }` —— 只接受 Agent Name，不接受 raw pane ID。
 - 正常输出：`{ "status": "closed", "agent": string }`
@@ -141,9 +156,9 @@ Herdr Link is the standard interoperability channel between agents running in th
   5. 如果关闭的是调用 Agent 自己的 pane，进程可能在工具响应完整返回前终止；调用方不得依赖 self-close 的返回值完成后续业务动作；
   6. Herdr 返回失败时直接失败，不猜测替代目标。
 
-### 4.5 工具命名呈现
+### 4.6 工具命名呈现
 
-- Canonical 名固定为 Tier 0 `herdr_link` 与 Tier 1 `herdr_link_peers` / `herdr_link_send` / `herdr_link_close`；
+- Canonical 名固定为 Tier 0 `herdr_link` 与 Tier 1 `herdr_link_start` / `herdr_link_peers` / `herdr_link_send` / `herdr_link_close`；
 - Runtime 可因宿主机制以不同形态呈现：
   - **true deferred tools**：四个工具均为独立注册工具，dormant 时仅 gateway 在模型可见集合中，激活后 Tier 1 进入可见集合（如 Pi 的动态工具 API）；
   - **prefix 型独立工具**（如 MCP 宿主的 `mcp__<namespace>__<tool>`）：呈现名的结尾必须是完整 canonical 名；
@@ -152,7 +167,7 @@ Herdr Link is the standard interoperability channel between agents running in th
 - 无论哪种形态，呈现层与 canonical 名之间必须有确定性映射；入参/出参 schema、错误语义与调用时序约束完全一致；
 - Active presentation 必须同时声明该 Runtime 的实际呈现方式与 dormant/active 行为，使模型无需猜测即可正确激活和调用。
 
-逻辑能力集合在所有形态下恒为：**activate / peers / send（包括普通回复）/ close**。
+逻辑能力集合在所有形态下恒为：**activate / start / peers / send（包括普通回复）/ close**。
 
 ## 5. Peer 地址模型与通信域
 
@@ -167,19 +182,19 @@ Herdr Link is the standard interoperability channel between agents running in th
 
 ## 6. Adapter Contract
 
-一个 Runtime 被视为支持 Herdr Link，必须由同一 Runtime Adapter 交付闭环满足四项逻辑能力：
+一个 Runtime 被视为支持 Herdr Link，必须由同一 Runtime Adapter 交付闭环满足五项逻辑能力：
 
 1. **Activate**：提供 `herdr_link` gateway 等价能力（§4.1）；
-2. **Expose Active Contract Semantics**：active 后让模型完整知道本协议第 3 节的规则；允许通过 system-prompt injection、active tool schema/description、gateway presentation 或组合实现；dormant 时必须**不**暴露 Tier 1 Contract 语义；
-3. **Expose Peers / Send**：提供 `herdr_link_peers`、`herdr_link_send`（包括普通回复）等价能力；
-4. **Expose Close**：提供 `herdr_link_close` 等价能力。
+2. **Start**：提供 `herdr_link_start` 等价能力（§4.2），只执行调用方明确提交的 configured 或 explicit start；
+3. **Expose Active Contract Semantics**：active 后让模型完整知道本协议第 3 节的规则；允许通过 system-prompt injection、active tool schema/description、gateway presentation 或组合实现；dormant 时必须**不**暴露 Tier 1 Contract 语义；
+4. **Expose Peers / Send**：提供 `herdr_link_peers`、`herdr_link_send`（包括普通回复）等价能力；
+5. **Expose Close**：提供 `herdr_link_close` 等价能力。
 
 “同一 Runtime Adapter”指一个可独立安装和验证的 Runtime-specific 交付单元；它可以由多个宿主接线点组成（例如 MCP tools + Runtime hook），但不得把外部 Agent 指令文件或操作者维护的 Contract 副本当作第五项依赖。
 
-Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool system 实现；不强制实现语言。V1 不创建统一 Adapter Framework（无 BaseAdapter / registry / plugin loader / daemon）。工具命名呈现须符合 §4.5。已知的合规呈现形态：
-
+Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool system 实现；不强制实现语言。V1 不创建统一 Adapter Framework（无 BaseAdapter / registry / plugin loader / daemon）。工具命名呈现须符合 §4.6。已知的合规呈现形态：
 - **true deferred tools**（如 Pi）：四工具全部注册，`session_start` 时把 Tier 1 移出 active 集合，gateway 以加性方式启用 Tier 1；close 保持顺序执行以保证 send 先完成；
-- **single-gateway dispatch**（宿主无公开的动态启停 API 时，如 OpenCode）：模型面常驻且仅有一个极小 `herdr_link` dispatcher，空参调用幂等激活本 session，随后以 `action: peers|send|close` 分发到同一控制层；Active Contract semantics 仅在已激活 session 暴露；
+- **single-gateway dispatch**（宿主无公开的动态启停 API 时，如 OpenCode）：模型面常驻且仅有一个极小 `herdr_link` dispatcher，空参调用幂等激活本 session，随后以 `action: start|peers|send|close` 分发到同一控制层；Active Contract semantics 仅在已激活 session 暴露；
 - **shared MCP：listChanged 优先 + gateway fallback**（Claude Code / Codex / AGY 等）：dormant `tools/list` 只返回 gateway；声明 `tools.listChanged` capability，激活时发射一次 `notifications/tools/list_changed`；active `tools/list` 返回 gateway + Tier 1；不响应刷新的 Host 通过 gateway 显式 action 分发保持全功能。MCP activation 按 stdio 连接（即宿主为本 session 拉起的 server 进程）记忆，连接结束即回到 dormant。
 
 ### 6.1 环境门控（Environment Gate）
@@ -217,24 +232,29 @@ V1 定义最小错误语义，全部是本地 tool operation failure，不是跨
 | `PEER_NOT_FOUND` | 目标不是当前 workspace 内的 live named peer——涵盖名字非法、目标不存在、目标属于其他 workspace、target workspace 未上报；四种情况对模型不可区分（scope privacy） |
 | `SEND_FAILED` | self 与目标均已解析并通过 guard，但 Herdr 未接受 message prompt |
 | `CLOSE_FAILED` | 目标已解析到 authoritative pane，但 Herdr `pane close` 失败 |
+| `START_CONFIG_NOT_FOUND` | 配置模式找不到当前项目的 `.agents/agent_config.json` |
+| `START_AGENT_NOT_FOUND` | `config_agent` 不存在于配置的 `agents` 映射 |
+| `START_CONFIG_INVALID` | 配置 JSON、schema、variants 或 strategy 非法 |
+| `START_INPUT_INVALID` | configured/explicit 输入缺失、类型错误或字段混用 |
+| `START_FAILED` | Herdr `agent.start` 拒绝或启动失败 |
 
 ### Failure Policy
 
 - 不自动 retry；不 fallback 到 terminal send/read；不 fallback 到 focused pane；不转换成 Workflow 状态；
-- **错误分类透传**：底层已归类为 `NOT_IN_HERDR` 的环境/transport 失败，不得被外层操作逻辑重包装成 `SEND_FAILED` / `CLOSE_FAILED` 等操作级错误码；操作逻辑只对尚未分类的意外异常使用自身 fallback 码；
+- **错误分类透传**：底层已归类为 `NOT_IN_HERDR` 的环境/transport 失败，不得被外层操作逻辑重包装成 `START_FAILED` / `SEND_FAILED` / `CLOSE_FAILED` 等操作级错误码；操作逻辑只对尚未分类的意外异常使用自身 fallback 码；
 - Agent-facing tool error 只返回稳定 error code 与简化原因；不得暴露 raw pane/tab/workspace/terminal ID，也不得把 `agent rename` 或其他越界恢复动作提示给模型。底层诊断细节如需保留，只能进入 operator-facing 日志。
 
 ## 8. Command Safety
 
 - Herdr CLI 必须通过 argv 数组执行（`execFile` 或等价无 shell 方式），禁止构造 shell command string。
-- 调用面：`agent get <target>`、`agent list`、`agent prompt <target> <text>`、`pane close <pane_id>`。
+- 调用面：`agent get <target>`、`agent list`、`agent prompt <target> <text>`、`agent start <name> --kind <kind> --pane <pane> -- [args...]`、`pane close <pane_id>`。
 - `agent prompt` 的投递文本是 §2 定义的 self-describing inbound wrapper；除此之外不构造任何额外协议负载。
-- 不使用 `--wait`（V1 无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、`agent start`、任何 workspace 控制命令。
+- 不使用 `--wait`（V1 无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、任何 workspace 控制命令；`agent start` 只能由 canonical `herdr_link_start` 进入。
 - `agent rename` 仅限 §6.3 self identity bootstrap 使用：目标只能是当前 pane 中未命名的 live occupant；禁止将其暴露为模型工具、用于任何其他 pane/agent 目标，或在面向模型的文本中提示该动作。
 
 ## 9. Non-goals
 
-V1 不提供：agent 创建/启动/配置/调度、通用 Agent Name 管理（分配策略/持久化/恢复——§6.3 的一次性 self identity bootstrap 除外，Link 自身不持久化任何名字）、自动回收策略、模型选择、workflow/task/stage 状态、业务结果 schema、evidence/receipt/review、持久消息队列、跨机器传输、权限审批系统、离线投递、可靠投递确认、全局权限、跨 session 持久化。
+V1 提供调用方明确请求的 Agent start execution primitive（configured/explicit），但不提供业务调度、任务编排、Agent pool、持久化配置状态或模型选择策略。Link 仍不提供通用 Agent Name 管理（分配策略/持久化/恢复——§6.3 的一次性 self identity bootstrap 除外，Link 自身不持久化任何名字）、自动回收策略、workflow/task/stage 状态、业务结果 schema、evidence/receipt/review、持久消息队列、跨机器传输、权限审批系统、离线投递、可靠投递确认、全局权限或跨 session 持久化。
 
 明确不属于 Herdr Link 的还有：
 

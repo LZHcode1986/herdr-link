@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "agents": {
+    "example-single": {
+      "variants": [
+        {
+          "kind": "pi",
+          "args": [
+            "--model",
+            "your-provider/your-model",
+            "--thinking",
+            "high"
+          ]
+        }
+      ]
+    },
+    "example-round-robin": {
+      "strategy": "round-robin",
+      "variants": [
+        {
+          "kind": "pi",
+          "args": [
+            "--model",
+            "provider-a/model-a",
+            "--thinking",
+            "high"
+          ]
+        },
+        {
+          "kind": "pi",
+          "args": [
+            "--model",
+            "provider-b/model-b",
+            "--thinking",
+            "high"
+          ]
+        }
+      ]
+    }
+  }
+}

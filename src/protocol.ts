@@ -20,17 +20,19 @@ export const MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
  * docs/mcp-wiring.md). Tier 1 are the canonical tool names exposed
  * through the gateway. Both are stable machine-usable constants;
  * runtime-specific presented names must map deterministically onto them
- * (PROTOCOL.md §4.4).
+ * (PROTOCOL.md §4.6).
  * ------------------------------------------------------------------ */
 
 /** Tier 0 — gateway name in its underscore host-namespace form. */
 export const HERDR_LINK_GATEWAY = "herdr_link" as const;
 
 /** Tier 1 — canonical tool names exposed through the gateway. */
+export const TOOL_START = "herdr_link_start" as const;
 export const TOOL_PEERS = "herdr_link_peers" as const;
 export const TOOL_SEND = "herdr_link_send" as const;
 export const TOOL_CLOSE = "herdr_link_close" as const;
-export const HERDR_LINK_TOOLS = [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE] as const;
+export const HERDR_LINK_TOOLS = [TOOL_START, TOOL_PEERS, TOOL_SEND, TOOL_CLOSE] as const;
+export const HERDR_LINK_COMMUNICATION_TOOLS = [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE] as const;
 
 /* ------------------------------------------------------------------ *
  * Agent state (blueprint v2)
@@ -83,6 +85,41 @@ export interface AgentContext {
   agent_status: AgentState;
 }
 
+/** Common input for the Agent start execution primitive. */
+export interface StartCommonInput {
+  /** New Herdr Agent Name. */
+  name: string;
+  /** Existing pane in which Herdr starts the Agent. */
+  pane: string;
+}
+
+/** Project-configured start: the configuration owns the complete launch parameters. */
+export interface ConfiguredStartInput extends StartCommonInput {
+  config_agent: string;
+  kind?: never;
+  args?: never;
+}
+
+/** Explicit start: the caller owns the complete Herdr launch parameters. */
+export interface ExplicitStartInput extends StartCommonInput {
+  kind: string;
+  args: string[];
+  config_agent?: never;
+}
+
+export type StartAgentInput = ConfiguredStartInput | ExplicitStartInput;
+
+/** Stable receipt returned after Herdr accepts an Agent start. */
+export interface StartAgentReceipt {
+  status: "started";
+  agent: string;
+  kind: string;
+}
+
+/** Shared model-facing description; detailed config semantics live in the start section. */
+export const START_TOOL_DESCRIPTION =
+  "Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.";
+
 /** The cross-agent message envelope (PROTOCOL.md §2). Minimal fields only. */
 export interface HerdrLinkEnvelope {
   protocol: typeof PROTOCOL_ID;
@@ -99,6 +136,11 @@ export const LINK_ERROR_CODES = [
   "PEER_NOT_FOUND",
   "SEND_FAILED",
   "CLOSE_FAILED",
+  "START_CONFIG_NOT_FOUND",
+  "START_AGENT_NOT_FOUND",
+  "START_CONFIG_INVALID",
+  "START_INPUT_INVALID",
+  "START_FAILED",
 ] as const;
 
 export type LinkErrorCode = (typeof LINK_ERROR_CODES)[number];
@@ -121,6 +163,11 @@ export const AGENT_ERROR_DETAILS: Record<LinkErrorCode, string> = {
   PEER_NOT_FOUND: "target agent is not a live peer",
   SEND_FAILED: "Herdr did not accept message delivery",
   CLOSE_FAILED: "Herdr pane close failed",
+  START_CONFIG_NOT_FOUND: "configured Agent start configuration was not found",
+  START_AGENT_NOT_FOUND: "configured Agent start entry was not found",
+  START_CONFIG_INVALID: "configured Agent start configuration is invalid",
+  START_INPUT_INVALID: "Agent start input is invalid",
+  START_FAILED: "Herdr did not accept Agent start",
 };
 
 /** Formats a Link failure without exposing raw Herdr topology or CLI details. */
