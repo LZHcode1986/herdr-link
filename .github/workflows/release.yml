@@ -33,7 +33,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build:opencode && npm run build:mcp && head -1 dist/herdr-link.mcp.js | grep -q '#!'
+      - run: npm run build:opencode && npm run build:mcp && npm run check:mcp-bundle && head -1 dist/herdr-link.mcp.js | grep -q '#!'
       - name: Publish to npm with provenance
         if: ${{ !inputs.dry_run }}
         run: npm publish --provenance --access public

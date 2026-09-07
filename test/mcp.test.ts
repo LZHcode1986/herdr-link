@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,6 +97,11 @@ function restoreHerdrEnv(previous: Record<string, string | undefined>): void {
     else process.env[name] = value;
   }
 }
+
+test("MCP server version matches package.json", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  assert.equal(MCP_SERVER_VERSION, packageJson.version);
+});
 
 test("MCP server request handler", async (t) => {
   await t.test("initialize echoes the client protocol version, reports info, declares tools.listChanged", async () => {

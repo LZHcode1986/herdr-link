@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-07
+
+### Fixed
+
+- Fixed MCP `serverInfo.version` to report the package version.
+- Added a package/MCP version consistency regression guard.
+
 ## [0.4.0] - 2026-09-06
 
 ### Added

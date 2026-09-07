@@ -39,7 +39,7 @@ import {
 
 export const MCP_SERVER_NAME = "herdr-link";
 /** Keep in sync with package.json "version" (serverInfo is informational). */
-export const MCP_SERVER_VERSION = "0.2.1";
+export const MCP_SERVER_VERSION = "0.4.1";
 /** Fallback protocol version advertised when the client sends none. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 

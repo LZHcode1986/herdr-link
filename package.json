@@ -1,6 +1,6 @@
 {
   "name": "herdr-link",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "pi": {
     "extensions": [
       "./src/pi.ts"
@@ -41,7 +41,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "build:opencode": "esbuild src/opencode.ts --bundle --format=esm --platform=node --external:@opencode-ai/plugin --outfile=dist/herdr-link.opencode.js",
-    "build:mcp": "esbuild src/mcp.ts --bundle --format=esm --platform=node --target=node22 --banner:js='#!/usr/bin/env node' --outfile=dist/herdr-link.mcp.js"
+    "build:mcp": "esbuild src/mcp.ts --bundle --format=esm --platform=node --target=node22 --banner:js='#!/usr/bin/env node' --outfile=dist/herdr-link.mcp.js",
+    "check:mcp-bundle": "node scripts/check-mcp-bundle.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
