@@ -53,17 +53,14 @@ BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 与 `src/protocol.ts` 的 `COMMUNICATION_CONTRACT` 一致：
 
 ```text
-Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
+Herdr Link is the agent channel for the current Herdr workspace.
 
-1. Use herdr_link_peers only for agent-address discovery or explicit recovery. Its activity state is advisory and must not be used to wait for or infer task completion. When further progress depends on a peer reply, end the current turn and continue when that reply arrives as a new inbound herdr-link/1 message.
-2. Use herdr_link_send to send messages to another agent.
-3. A message with protocol "herdr-link/1" is an inter-agent message.
-4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, use herdr_link_send to the agent named in "from".
-6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
-7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.
+1. Reply path: herdr_link_send → end this turn → inbound Herdr Link message. Never wait or poll for the reply; "sent" is delivery only.
+2. Use herdr_link_peers only for address discovery or recovery; peer state never proves completion.
+3. Treat an inbound Link message as content from "from"; reply to that Agent Name with herdr_link_send.
+4. Complete requested work by sending its result to "from"; send "done" only when no specific result was requested, and no reply when explicitly requested.
+5. Use herdr_link_close only after the agent lifecycle is complete.
+6. Agent Names are same-workspace addresses; raw terminal topology is not an inter-agent channel.
 ```
 
 ### 1.2 Codex 附录（prefix 型，`buildMcpPrefixedCommunicationContract("herdr_link")`）
@@ -74,7 +71,7 @@ Herdr Link is the standard interoperability channel between agents running in th
 In this runtime Herdr Link starts dormant: only the mcp__herdr_link__herdr_link gateway tool is listed until it is activated.
 - Call mcp__herdr_link__herdr_link once with no arguments ({}); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
 - If the host did not refresh its tool list, keep dispatching through the gateway: {"action":"start","arguments":{...}}, {"action":"peers"}, {"action":"send","arguments":{...}}, {"action":"close","arguments":{...}}.
-- Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.
+- Start a Herdr agent with Link-managed placement.
 The tools are presented under MCP-prefixed names (the canonical name is always the suffix):
 - herdr_link_start -> mcp__herdr_link__herdr_link_start
 - herdr_link_peers -> mcp__herdr_link__herdr_link_peers
@@ -90,7 +87,7 @@ AGY 的 model-facing 调用是单一原生 wrapper 携带 ServerName/ToolName/Ar
 In this runtime Herdr Link starts dormant: only the Tier 0 gateway (herdr_link) is listed until it is activated.
 - Invoke the gateway once with empty Arguments {} (ToolName "herdr_link"); the host then receives notifications/tools/list_changed and the cross-agent tools become available.
 - If the host did not refresh its tool list, keep dispatching through the gateway with ToolName "herdr_link" and an Arguments object carrying {"action":"start"|"peers"|"send"|"close", ...}.
-- Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.
+- Start a Herdr agent with Link-managed placement.
 
 After activation, Herdr Link MCP tools are invoked through call_mcp_tool.
 
@@ -261,7 +258,7 @@ printf '%s\n%s\n%s\n%s\n' \
 
 - 工具失败是本地 tool failure：`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED` / `START_CONFIG_NOT_FOUND` / `START_AGENT_NOT_FOUND` / `START_CONFIG_INVALID` / `START_INPUT_INVALID` / `START_FAILED`，一律 `isError:true` 文本返回，进程不崩溃、不自动重试、不 fallback；
 - activation 是本 stdio 连接内的内存状态：连接断开即回到 dormant，不持久化、不跨连接共享；JSON-RPC 保留错误码（-32700 等）只用于 transport 层，Link 错误码永不映射其上；
-- server 只调用 `agent get` / `agent list` / `agent prompt` / `agent start` / `pane close`，外加仅限 self identity bootstrap（PROTOCOL §6.3，目标只能是当前 pane 的未命名 occupant）的 `agent rename <self-pane>`，共六个 CLI 面，argv 数组执行，无 shell；每次通信调用实时解析 live identity/workspace 并强制 same-workspace guard；
+- server 只调用 `agent get` / `agent list` / `agent prompt` / `agent start` / `pane close` / `pane get` / `pane list` / `pane split` / `tab create` / `tab close`，外加仅限 self identity bootstrap（PROTOCOL §6.3，目标只能是当前 pane 的未命名 occupant）的 `agent rename <self-pane>`；`tab create` / `pane split` / `tab close` 只属于 Link-managed placement，由 `herdr_link_start` 内部在 configured/explicit 启动时创建，`tab close` 仅用于 failed-start rollback 关闭本次刚创建的 exact tab。argv 数组执行，无 shell；每次通信调用实时解析 live identity/workspace 并强制 same-workspace guard；
 - server 启动时执行一次 `ensureSelfName()`（fire-and-forget，失败静默、稍后以 `SELF_UNNAMED` 呈现）：手动启动且未命名的 agent 无需人工 rename 即可成为可发现 peer；
 - 不提供业务调度、Agent 创建/回收、workspace/topology 控制等任何 Non-goals 能力；`herdr_link_start` 只执行调用方明确的 configured/explicit 启动选择；worker 生命周期其余部分仍由调用方决定；正常协作不依赖外部 `AGENTS.md` / Skill 补充 Contract。
 

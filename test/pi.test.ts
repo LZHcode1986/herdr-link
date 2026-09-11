@@ -134,7 +134,7 @@ async function withHerdrMock(
   }
 }
 
-test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
+test("Pi adapter — Tier 0/Tier 1", async (t) => {
   const previous = snapshotEnv();
   t.after(() => restoreEnv(previous));
 
@@ -166,7 +166,7 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       tools.map((tool) => tool.name).sort(),
       ["herdr_link", "herdr_link_close", "herdr_link_peers", "herdr_link_send", "herdr_link_start"],
     );
-    assert.deepEqual([...handlers.keys()].sort(), ["before_agent_start", "session_start"]);
+    assert.deepEqual([...handlers.keys()].sort(), ["before_agent_start", "session_start", "tool_call"]);
 
     // …and session_start demotes Tier 1 out of the active set while keeping
     // host defaults and the gateway: the model sees only the tiny gateway.
@@ -245,8 +245,21 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       setHerdrRunnerForTests(undefined);
     }
   });
-  await t.test("Tier 1: start forwards explicit mode to the shared control layer", async () => {
+  await t.test("Tier 1: start forwards explicit mode with Link-managed new-tab placement", async () => {
+    const self = { name: "brain", workspace_id: "ws-1", pane_id: "self-pane", agent_status: "idle" };
     await withHerdrMock((args) => {
+      if (args[0] === "agent" && args[1] === "get") return { result: { agent: self } };
+      if (args[0] === "tab" && args[1] === "create") {
+        return {
+          result: {
+            root_pane: { pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: String(args[5]) },
+            tab: { tab_id: "wS:t1", workspace_id: "ws-1" },
+          },
+        };
+      }
+      if (args[0] === "pane" && args[1] === "list") {
+        return { result: { panes: [{ pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: "/launch" }] } };
+      }
       if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
       throw new Error(`unexpected CLI call: ${args.join(" ")}`);
     }, async (cliCalls) => {
@@ -256,35 +269,49 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
       const start = findTool(tools, "herdr_link_start");
       const result = (await start.execute(
         "start-1",
-        { name: "worker-01", pane: "wS:p22", kind: "pi", args: ["--model", "model-x"] },
+        { name: "worker-01", kind: "pi", args: ["--model", "model-x"] },
         undefined,
         undefined,
         NO_CTX,
       )) as { content: Array<{ text: string }>; details: unknown };
       assert.deepEqual(parsedText(result), { status: "started", agent: "worker-01", kind: "pi" });
       assert.deepEqual(result.details, parsedText(result));
-      assert.deepEqual(cliCalls.map((call) => call.args), [
-        ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p22", "--", "--model", "model-x"],
+      const starts = cliCalls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
+      assert.deepEqual(starts.map((call) => call.args), [
+        ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p1", "--", "--model", "model-x"],
       ]);
     });
   });
 
-  await t.test("Tier 1: start forwards configured mode and runtime cwd to shared control layer", async () => {
+  await t.test("Tier 1: start forwards configured mode with placement and context directory", async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "herdr-link-pi-config-test-"));
     try {
       mkdirSync(join(projectRoot, ".agents"));
       writeFileSync(
         join(projectRoot, ".agents", "agent_config.json"),
         JSON.stringify({
-          version: 1,
           agents: {
             "work-agent": {
+              placement: { mode: "new_tab" },
               variants: [{ kind: "pi", args: ["--model", "configured/model"] }],
             },
           },
         }),
       );
+      const self = { name: "brain", workspace_id: "ws-1", pane_id: "self-pane", agent_status: "idle" };
       await withHerdrMock((args) => {
+        if (args[0] === "agent" && args[1] === "get") return { result: { agent: self } };
+        if (args[0] === "tab" && args[1] === "create") {
+          return {
+            result: {
+              root_pane: { pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: String(args[5]) },
+              tab: { tab_id: "wS:t1", workspace_id: "ws-1" },
+            },
+          };
+        }
+        if (args[0] === "pane" && args[1] === "list") {
+          return { result: { panes: [{ pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: projectRoot }] } };
+        }
         if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
         throw new Error(`unexpected CLI call: ${args.join(" ")}`);
       }, async (cliCalls) => {
@@ -293,20 +320,22 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
         const start = findTool(tools, "herdr_link_start");
         const result = (await start.execute(
           "start-config-1",
-          { name: "worker-config", pane: "wS:p23", config_agent: "work-agent" },
+          { name: "worker-config", config_agent: "work-agent" },
           undefined,
           undefined,
           { cwd: projectRoot } as ExtensionContext,
         )) as { content: Array<{ text: string }>; details: unknown };
         assert.deepEqual(parsedText(result), { status: "started", agent: "worker-config", kind: "pi" });
-        assert.deepEqual(cliCalls.map((call) => call.args), [
-          ["agent", "start", "worker-config", "--kind", "pi", "--pane", "wS:p23", "--", "--model", "configured/model"],
+        const starts = cliCalls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
+        assert.deepEqual(starts.map((call) => call.args), [
+          ["agent", "start", "worker-config", "--kind", "pi", "--pane", "wS:p1", "--", "--model", "configured/model"],
         ]);
       });
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
   await t.test("Contract injection: absent while dormant, compact once active", async () => {
     useHerdrEnv();
     const { pi, tools, handlers, dispatch } = fakePi();
@@ -324,7 +353,16 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
     assert.ok(result.systemPrompt.startsWith(baseSystemPrompt));
     const injected = result.systemPrompt.slice(baseSystemPrompt.length);
     assert.ok(injected.includes("\n\n"));
-    for (const marker of ["herdr-link/1", "exactly \"done\"", "failure or blocker", "explicitly requested no reply", "herdr_link_peers", "herdr_link_send", "herdr_link_close", "later tool step"]) {
+    for (const marker of [
+      "herdr_link_send → end this turn",
+      "\"sent\" is delivery only",
+      "peer state never proves completion",
+      "herdr_link_peers",
+      "herdr_link_send",
+      "herdr_link_close",
+      "agent lifecycle is complete",
+      "same-workspace addresses",
+    ]) {
       assert.ok(injected.includes(marker), `compact Contract must mention ${marker}`);
     }
     // Pi injects the canonical Contract directly; tool descriptions carry the presentation details.
@@ -537,5 +575,69 @@ test("Pi adapter v2 — Tier 0/Tier 1", async (t) => {
         ["pane", "close", "w1:p2"],
       ]);
     });
+  });
+
+  await t.test("wait guard: dormant/active sessions block raw agent wait and prompt --wait at the Bash boundary", async () => {
+    useHerdrEnv();
+    const { pi, tools, dispatch } = fakePi();
+    piExtension(pi);
+
+    const bashCall = (command: string): unknown =>
+      dispatch({
+        type: "tool_call",
+        toolName: "bash",
+        toolCallId: "t-bash",
+        input: { command },
+      });
+
+    // Dormant session: no guard. Raw Herdr wait / prompt --wait pass through
+    // exactly as ordinary Bash; nothing is intercepted.
+    assert.equal(bashCall("herdr agent wait peer --timeout 600000"), undefined);
+    assert.equal(bashCall("herdr agent prompt peer hello --wait"), undefined);
+    assert.equal(bashCall("ls -la"), undefined);
+
+    // Activate the channel through the gateway; then the guard engages.
+    const gateway = findTool(tools, "herdr_link");
+    await gateway.execute("gw-1", {}, undefined, undefined, NO_CTX);
+
+    // Active: raw agent wait is hard-blocked and terminates the turn (never
+    // waits, never polls — the inbound Link message is the resume signal).
+    assert.deepEqual(bashCall("herdr agent wait peer --timeout 600000"), {
+      block: true,
+      reason: "Wait disabled by Herdr Link. End this turn; resume on the inbound Link message.",
+      terminate: true,
+    });
+
+    // Active: prompt --wait is blocked WITHOUT terminate, so the in-flight
+    // prompt is never lost — the model switches to herdr_link_send instead.
+    assert.deepEqual(bashCall("herdr agent prompt peer hello --wait"), {
+      block: true,
+      reason: "Use herdr_link_send for agent messages.",
+    });
+    // Same for the flag before the target.
+    assert.deepEqual(bashCall("herdr agent prompt --wait peer hello"), {
+      block: true,
+      reason: "Use herdr_link_send for agent messages.",
+    });
+
+    // Ordinary Bash and plain prompt (no --wait) are never intercepted.
+    assert.equal(bashCall("ls -la"), undefined);
+    assert.equal(bashCall("herdr agent prompt peer hello"), undefined);
+
+    // The guard lives at the Bash boundary only: a herdr_link_send call is
+    // never a Bash tool call and is never blocked by it.
+    assert.equal(
+      dispatch({
+        type: "tool_call",
+        toolName: "herdr_link_send",
+        toolCallId: "t-send",
+        input: { to: "peer", message: "result" },
+      }),
+      undefined,
+    );
+
+    // A new session resets to dormant: the guard disengages once more.
+    dispatch({ type: "session_start", reason: "new" });
+    assert.equal(bashCall("herdr agent wait peer"), undefined);
   });
 });

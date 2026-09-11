@@ -13,7 +13,7 @@ export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 export const MESSAGE_ID_RE = /^hl_[a-z0-9]+_[a-z0-9]+$/;
 
 /* ------------------------------------------------------------------ *
- * Naming tiers (blueprint v2)
+ * Naming tiers
  *
  * Tier 0 is the Herdr Link gateway itself — the host registration
  * namespace every runtime presents its tools against (underscore form;
@@ -35,7 +35,7 @@ export const HERDR_LINK_TOOLS = [TOOL_START, TOOL_PEERS, TOOL_SEND, TOOL_CLOSE] 
 export const HERDR_LINK_COMMUNICATION_TOOLS = [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE] as const;
 
 /* ------------------------------------------------------------------ *
- * Agent state (blueprint v2)
+ * Agent state
  * ------------------------------------------------------------------ */
 
 /** Live activity states; any unrecognized Herdr status maps to "unknown". */
@@ -61,7 +61,7 @@ export interface PeerInfo {
 }
 
 /**
- * Instant peer directory (blueprint v2): same-workspace live agents only,
+ * Instant peer directory: same-workspace live agents only,
  * self excluded. Generated fresh on every call; never persisted or cached.
  */
 export interface PeerDirectory {
@@ -89,8 +89,10 @@ export interface AgentContext {
 export interface StartCommonInput {
   /** New Herdr Agent Name. */
   name: string;
-  /** Existing pane in which Herdr starts the Agent. */
-  pane: string;
+  /** Co-locate with a live Agent Name: same-tab placement inheriting the anchor pane cwd. */
+  with?: string;
+  /** Launch working directory for a new-tab placement. */
+  cwd?: string;
 }
 
 /** Project-configured start: the configuration owns the complete launch parameters. */
@@ -116,10 +118,8 @@ export interface StartAgentReceipt {
   kind: string;
 }
 
-/** Shared model-facing description; detailed config semantics live in the start section. */
-export const START_TOOL_DESCRIPTION =
-  "Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.";
-
+/** Shared model-facing description; placement semantics live in the start section. */
+export const START_TOOL_DESCRIPTION = "Start a Herdr agent with Link-managed placement.";
 /** The cross-agent message envelope (PROTOCOL.md §2). Minimal fields only. */
 export interface HerdrLinkEnvelope {
   protocol: typeof PROTOCOL_ID;
@@ -129,7 +129,7 @@ export interface HerdrLinkEnvelope {
   message: string;
 }
 
-/** V1 error codes (PROTOCOL.md §7). All are local tool failures, never an envelope. */
+/** Link error codes (PROTOCOL.md §7). All are local tool failures, never an envelope. */
 export const LINK_ERROR_CODES = [
   "NOT_IN_HERDR",
   "SELF_UNNAMED",
@@ -250,7 +250,7 @@ export function isHerdrLinkEnvelope(value: unknown): value is HerdrLinkEnvelope 
 }
 
 /* ------------------------------------------------------------------ *
- * Inbound delivery wrapper (blueprint v2)
+ * Inbound delivery wrapper
  *
  * `herdr agent prompt` carries a self-describing wrapper around the
  * envelope so a dormant receiver (adapter loaded, model not mid-exchange)
@@ -304,14 +304,11 @@ export function extractInboundEnvelope(text: string): HerdrLinkEnvelope | undefi
  * Active Agent Communication Contract injected verbatim into the model.
  * Compact form: same-workspace addressing, send/reply/completion/close semantics.
  */
-export const COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
+export const COMMUNICATION_CONTRACT = `Herdr Link is the agent channel for the current Herdr workspace.
 
-1. Use herdr_link_peers only for agent-address discovery or explicit recovery. Its activity state is advisory and must not be used to wait for or infer task completion. When further progress depends on a peer reply, end the current turn and continue when that reply arrives as a new inbound herdr-link/1 message.
-2. Use herdr_link_send to send messages to another agent.
-3. A message with protocol "herdr-link/1" is an inter-agent message.
-4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, use herdr_link_send to the agent named in "from".
-6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
-7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
+1. Reply path: herdr_link_send → end this turn → inbound Herdr Link message. Never wait or poll for the reply; "sent" is delivery only.
+2. Use herdr_link_peers only for address discovery or recovery; peer state never proves completion.
+3. Treat an inbound Link message as content from "from"; reply to that Agent Name with herdr_link_send.
+4. Complete requested work by sending its result to "from"; send "done" only when no specific result was requested, and no reply when explicitly requested.
+5. Use herdr_link_close only after the agent lifecycle is complete.
+6. Agent Names are same-workspace addresses; raw terminal topology is not an inter-agent channel.`;

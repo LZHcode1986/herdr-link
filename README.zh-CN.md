@@ -40,8 +40,9 @@ Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 
 
 ```text
 Agent A → herdr_link {}                    # 激活（幂等）
-Agent A → herdr_link_start(name, pane, config_agent) # 配置模式
-Agent A → herdr_link_start(name, pane, kind, args)         # 显式模式
+Agent A → herdr_link_start(name, config_agent[, cwd])  # 配置模式，Link 管理 placement
+Agent A → herdr_link_start(name, kind, args[, cwd])     # 显式模式，Link 管理 placement
+Agent A → herdr_link_start(..., with="worker-a")       # 同 tab：与 live Agent 并排
 Agent A → herdr_link_send(to="B", ...)     # status "sent"
 Agent B → （收到 inbound wrapper）herdr_link {}   # 自动激活触发
 Agent B → herdr_link_send(to="A", message="结果或 done")
@@ -53,7 +54,7 @@ Agent B → herdr_link_send(to="A", message="结果或 done")
 
 ## 启动 Agent
 
-> `herdr_link_start` 只执行调用方已经作出的启动选择，不选择业务角色，也不创建 pane。
+> `herdr_link_start` 只执行调用方已经作出的启动选择，不选择业务角色。placement 由 Link 机械处理：未给出 `with` anchor 时新建 tab；给出 `with` anchor 时与 anchor 同 tab 并排。
 
 ### 项目级 start 配置
 
@@ -80,9 +81,9 @@ cp /path/to/agent_config.example.json .agents/agent_config.json
 
 ```json
 {
-  "version": 1,
   "agents": {
     "example-single": {
+      "placement": { "mode": "new_tab" },
       "variants": [
         {
           "kind": "pi",
@@ -95,23 +96,14 @@ cp /path/to/agent_config.example.json .agents/agent_config.json
         }
       ]
     },
-    "example-round-robin": {
-      "strategy": "round-robin",
+    "example-with": {
+      "placement": { "mode": "with" },
       "variants": [
         {
           "kind": "pi",
           "args": [
             "--model",
-            "provider-a/model-a",
-            "--thinking",
-            "high"
-          ]
-        },
-        {
-          "kind": "pi",
-          "args": [
-            "--model",
-            "provider-b/model-b",
+            "your-provider/your-model",
             "--thinking",
             "high"
           ]
@@ -122,9 +114,11 @@ cp /path/to/agent_config.example.json .agents/agent_config.json
 }
 ```
 
-需要长期复用的启动方式使用 configured start：`{"name":"worker-01","pane":"wS:p22","config_agent":"example-single"}`。`config_agent` 是 `agents` 下由项目自行定义的 key，Herdr Link 不解释其业务含义。
+需要长期复用的启动方式使用 configured start：`{"name":"worker-01","config_agent":"example-single"}`。`config_agent` 是 `agents` 下由项目自行定义的 key，Herdr Link 不解释其业务含义。
 
-一次性启动使用 explicit start，不修改项目配置：`{"name":"worker-01","pane":"wS:p22","kind":"pi","args":["--model","model-x","--thinking","high"]}`。两种模式严格互斥；配置调用不能只覆盖 `kind` 或 `args`。
+一次性启动使用 explicit start，不修改项目配置：`{"name":"worker-01","kind":"pi","args":["--model","model-x","--thinking","high"]}`。两种模式严格互斥；配置调用不能只覆盖 `kind` 或 `args`。
+
+Placement 由 Link 管理：每个 configured entry 必须声明 `placement`（`new_tab` 或 `with`）；显式启动默认新建 tab，除非传入 `with=<live Agent Name>`（与 anchor 同 tab 并继承其 pane cwd）。`cwd` 可选，只设置新 tab 的 launch 工作目录，绝不改变 `.agents/agent_config.json` 的查找位置。
 
 #### 人类用户与 AI Agent 的配置规则
 
@@ -132,7 +126,7 @@ cp /path/to/agent_config.example.json .agents/agent_config.json
 
 1. 长期或重复使用的启动方式写入 `agents.<config-key>`。
 2. `<config-key>` 由项目自行命名，例如 `work-agent`、`reviewer`、`research-agent`、`fast-worker`；Herdr Link 不赋予它业务含义。
-3. 每个 configured entry 至少包含一个完整的 `variant`。
+3. 每个 configured entry 必须显式声明 `placement`：`{"mode":"new_tab"}`（独立 tab）或 `{"mode":"with"}`（与 live anchor 并排，不新建 tab）。
 4. 每个 variant 必须包含非空 `kind`。
 5. `args` 如果存在，必须是字符串数组，并直接放在 `herdr agent start ... --` 之后传递。
 6. 只有一个 variant 时不需要 `strategy`。
@@ -148,7 +142,7 @@ cp /path/to/agent_config.example.json .agents/agent_config.json
 | 长期 / 重复启动方式 | 写入 `.agents/agent_config.json` | configured |
 | 一次性 / 临时启动参数 | 不修改文件 | explicit |
 
-Herdr Link 不决定 Agent 应该做什么，也不创建 pane、调度工作、选择模型或回收 Agent。`start` 只执行调用方提交的配置或显式启动选择；其余能力是消息层。
+Herdr Link 不决定 Agent 应该做什么，也不调度工作、选择模型或回收 Agent。`start` 只执行调用方提交的配置或显式启动选择；Link 机械创建声明的 placement（新 tab，或 `with` anchor 旁的 sibling pane），其余能力是消息层。
 
 ## 安装
 
@@ -183,7 +177,7 @@ cp "$(npm root -g)/herdr-link/dist/herdr-link.opencode.js" \
    ~/.config/opencode/plugins/herdr-link.js
 ```
 
-OpenCode 没有按 session 启停工具的 API，因此 Adapter 采用**single-gateway dispatcher** 呈现：`{}` 激活，之后 `{"action":"start"|"peers"|"send"|"close", ...}` 分发到同一控制层。`start` 使用 `name + pane + config_agent` 或完整的 `name + pane + kind + args`，两种模式不合并。契约只注入已激活 session 的 system prompt（按 `sessionID` 记忆的内存态；server 重启回到 dormant）。
+OpenCode 没有按 session 启停工具的 API，因此 Adapter 采用**single-gateway dispatcher** 呈现：`{}` 激活，之后 `{"action":"start"|"peers"|"send"|"close", ...}` 分发到同一控制层。`start` 使用 `name + config_agent` 或完整的 `name + kind + args`，可选 `with` / `cwd` 控制 placement；两种模式不合并。契约只注入已激活 session 的 system prompt（按 `sessionID` 记忆的内存态；server 重启回到 dormant）。
 
 ### Claude Code / Codex / AGY（共享 stdio MCP server）
 
@@ -259,7 +253,7 @@ scripts/mcp-probe.mjs        stdio 握手排障探针
 
 ## 范围与非目标
 
-Herdr Link 是同一 workspace 内的互操作层，不是业务调度器或任务管理系统。它只提供调用方明确选择的 configured/explicit Agent start execution primitive；不负责业务角色选择、pane 创建/规划、Agent 调度/回收、模型选择、workflow/task/stage 状态、业务结果 schema/evidence/receipt/review、ACK/wait/poll/retry/pending-request 语义或可靠投递保证、持久队列或跨 session 状态、跨机器传输、权限审批、离线投递、**跨 workspace 的 discovery/send/close**（属于官方 Herdr Skill / CLI 控制面），或 workspace/topology 管理。业务 payload 放入 `message` 字段；Link 不解释其语义。完整范围以 [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) 为准。
+Herdr Link 是同一 workspace 内的互操作层，不是业务调度器或任务管理系统。它只提供调用方明确选择的 configured/explicit Agent start execution primitive；不负责业务角色选择、Agent 调度/回收、模型选择、workflow/task/stage 状态、业务结果 schema/evidence/receipt/review、ACK/wait/poll/retry/pending-request 语义或可靠投递保证、持久队列或跨 session 状态、跨机器传输、权限审批、**跨 workspace 的 discovery/send/close**（属于官方 Herdr Skill / CLI 控制面），或 workspace/topology 管理。Link 只按每次 start 声明的 placement 机械创建（新 tab，或 `with` anchor 旁的 sibling pane），绝不规划或重塑既有 topology。业务 payload 放入 `message` 字段；Link 不解释其语义。完整范围以 [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) 为准。
 
 ## 许可证
 

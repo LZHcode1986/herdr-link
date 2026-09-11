@@ -40,8 +40,9 @@ Every runtime exposes the same lazy two-tier surface:
 
 ```text
 Agent A → herdr_link {}                    # activate (idempotent)
-Agent A → herdr_link_start(name, pane, config_agent) # configured start
-Agent A → herdr_link_start(name, pane, kind, args)         # explicit start
+Agent A → herdr_link_start(name, config_agent[, cwd])  # configured start, Link-managed placement
+Agent A → herdr_link_start(name, kind, args[, cwd])     # explicit start, Link-managed placement
+Agent A → herdr_link_start(..., with="worker-a")       # same-tab: co-locate with live agent
 Agent A → herdr_link_send(to="B", ...)     # status "sent"
 Agent B → (receives inbound wrapper) herdr_link {}   # auto-activation trigger
 Agent B → herdr_link_send(to="A", message="result or done")
@@ -53,7 +54,7 @@ Anyone  → herdr_link_close(agent="worker-a")   # in a later tool step after th
 
 ## Starting Agents
 
-> `herdr_link_start` only executes an already-decided start; it does not choose a business role or create a pane.
+> `herdr_link_start` only executes an already-decided start; it does not choose a business role. Link handles the mechanical placement: a new tab when no `with` anchor is given, or a sibling pane co-located with the `with` anchor agent.
 
 ### Project start configuration
 
@@ -80,9 +81,9 @@ The copy command is only a convenience; the complete schema is also shown here s
 
 ```json
 {
-  "version": 1,
   "agents": {
     "example-single": {
+      "placement": { "mode": "new_tab" },
       "variants": [
         {
           "kind": "pi",
@@ -95,23 +96,14 @@ The copy command is only a convenience; the complete schema is also shown here s
         }
       ]
     },
-    "example-round-robin": {
-      "strategy": "round-robin",
+    "example-with": {
+      "placement": { "mode": "with" },
       "variants": [
         {
           "kind": "pi",
           "args": [
             "--model",
-            "provider-a/model-a",
-            "--thinking",
-            "high"
-          ]
-        },
-        {
-          "kind": "pi",
-          "args": [
-            "--model",
-            "provider-b/model-b",
+            "your-provider/your-model",
             "--thinking",
             "high"
           ]
@@ -122,17 +114,18 @@ The copy command is only a convenience; the complete schema is also shown here s
 }
 ```
 
-Use configured start for a reusable launch choice: `{"name":"worker-01","pane":"wS:p22","config_agent":"example-single"}`. The `config_agent` value is a user-defined key under `agents`; Herdr Link does not interpret its business meaning.
+Use configured start for a reusable launch choice: `{"name":"worker-01","config_agent":"example-single"}`. The `config_agent` value is a user-defined key under `agents`; Herdr Link does not interpret its business meaning.
 
-Use explicit start for a one-off launch, without changing the project file: `{"name":"worker-01","pane":"wS:p22","kind":"pi","args":["--model","model-x","--thinking","high"]}`. The two modes are mutually exclusive; a configured call cannot partially override `kind` or `args`.
+Use explicit start for a one-off launch, without changing the project file: `{"name":"worker-01","kind":"pi","args":["--model","model-x","--thinking","high"]}`. The two modes are mutually exclusive; a configured call cannot partially override `kind` or `args`.
 
+Placement is Link-managed: every configured entry declares `placement` (`new_tab` or `with`); explicit starts place a new tab unless `with=<live Agent Name>` is passed, which co-locates the new agent in the anchor agent's tab and inherits its pane cwd. `cwd` is optional and only sets the launch working directory of a new tab — it never changes where `.agents/agent_config.json` is looked up.
 #### Configuration rules for humans and AI Agents
 
 When a human or an AI Agent creates or edits `.agents/agent_config.json`:
 
 1. Save a long-term or repeatable launch choice under `agents.<config-key>`.
 2. Choose a project-defined key such as `work-agent`, `reviewer`, `research-agent`, or `fast-worker`; Herdr Link does not assign business meaning to it.
-3. Give every configured entry at least one complete `variant`.
+3. Give every configured entry an explicit `placement`: `{"mode":"new_tab"}` for its own tab, or `{"mode":"with"}` to co-locate with a live anchor agent (no tab is created then).
 4. Every variant must have a non-empty `kind`.
 5. If present, `args` must be a string array passed directly after `herdr agent start ... --`.
 6. A single variant needs no `strategy`.
@@ -148,7 +141,7 @@ The decision is:
 | Long-term / repeatable launch choice | Write `.agents/agent_config.json` | configured |
 | One-off / temporary launch parameters | Do not change the file | explicit |
 
-Herdr Link does not decide what agents should do, does not create panes, schedule work, select models, or recycle agents. Its `start` capability only executes a caller-provided configured or explicit launch choice; the remaining capabilities are the messaging layer.
+Herdr Link does not decide what agents should do, schedule work, select models, or recycle agents. Its `start` capability only executes a caller-provided configured or explicit launch choice; Link mechanically creates the declared placement (a new tab, or a sibling pane next to the `with` anchor), and the remaining capabilities are the messaging layer.
 
 ## Installation
 
@@ -195,7 +188,7 @@ cp "$(npm root -g)/herdr-link/dist/herdr-link.opencode.js" \
    ~/.config/opencode/plugins/herdr-link.js
 ```
 
-OpenCode has no per-session tool toggle API, so the adapter presents a **single-gateway dispatcher**: `{}` activates, then `{"action":"start"|"peers"|"send"|"close", ...}` dispatches to the same control layer. Start accepts either `name + pane + config_agent` or complete `name + pane + kind + args`; the modes do not merge. The contract is injected into the system prompt of activated sessions only (in-memory per `sessionID`; a server restart returns to dormant).
+OpenCode has no per-session tool toggle API, so the adapter presents a **single-gateway dispatcher**: `{}` activates, then `{"action":"start"|"peers"|"send"|"close", ...}` dispatches to the same control layer. Start accepts `name + config_agent` or complete `name + kind + args`, with optional `with` / `cwd`; the modes do not merge. The contract is injected into the system prompt of activated sessions only (in-memory per `sessionID`; a server restart returns to dormant).
 
 ### Claude Code / Codex / AGY (shared stdio MCP server)
 
@@ -271,7 +264,7 @@ Layering rule: `protocol.ts` has zero Herdr IO; `herdr.ts` only drives the Herdr
 
 ## Scope and non-goals
 
-Herdr Link is a same-workspace interoperability layer, not a business scheduler or task-management system. It provides only an explicit configured/explicit Agent start execution primitive; it does not choose roles, create or plan panes, schedule/recycle agents, select models, manage workflow/task/stage state, define business result schemas or evidence/receipt/review, provide acknowledgement/wait/poll/retry/pending-request semantics or reliable-delivery guarantees, maintain persistent queues or cross-session state, perform cross-machine transport, permission approval, offline delivery, **cross-workspace discovery/send/close** (that belongs to the official Herdr Skill / CLI control plane), or manage workspace topology. Put business payloads in the `message` field; Link never interprets their semantics. See [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) for the canonical scope.
+Herdr Link is a same-workspace interoperability layer, not a business scheduler or task-management system. It provides only an explicit configured/explicit Agent start execution primitive; it does not choose roles, schedule/recycle agents, select models, manage workflow/task/stage state, define business result schemas or evidence/receipt/review, provide acknowledgement/wait/poll/retry/pending-request semantics or reliable-delivery guarantees, maintain persistent queues or cross-session state, perform cross-machine transport, permission approval, offline delivery, **cross-workspace discovery/send/close** (that belongs to the official Herdr Skill / CLI control plane), or manage workspace topology. Link creates only the declared placement per start (a new tab, or a sibling pane next to the `with` anchor); it never plans or reshapes topology beyond that. Put business payloads in the `message` field; Link never interprets their semantics. See [`PROTOCOL.md` §9](./PROTOCOL.md#9-non-goals) for the canonical scope.
 
 ## License
 

@@ -114,6 +114,127 @@ function directoryHandler(
   };
 }
 
+interface MockPane {
+  pane_id: string;
+  tab_id: string;
+  workspace_id: string;
+  cwd: string;
+}
+
+interface StartTopologyOptions {
+  self?: AgentRow;
+  anchors?: Record<string, AgentRow>;
+  workspaceId?: string;
+  initialPanes?: MockPane[];
+  /** Injects this many failures at `agent start` before succeeding. */
+  startFailures?: number;
+  /** Replaces the pane list response used for root-pane resolution. */
+  paneListOverride?: (panes: MockPane[]) => unknown;
+  /** When set, `tab close` rejects (rollback failure). */
+  failTabClose?: boolean;
+}
+
+/**
+ * Stateful fake of the Herdr topology surface (tab/pane/agent) for start tests.
+ * Mirrors the measured CLI shapes: tab create / pane list / pane get / pane
+ * split / agent start / tab close / pane close, keyed by the same argv forms
+ * herdr.ts emits.
+ */
+function startTopologyHandler(options: StartTopologyOptions = {}): { handler: MockHandler; state: { panes: MockPane[] } } {
+  const workspaceId = options.workspaceId ?? "ws-1";
+  const self = options.self ?? { name: "brain", workspace_id: workspaceId, pane_id: "self-pane", agent_status: "idle" };
+  const anchors = options.anchors ?? {};
+  const panes: MockPane[] = [...(options.initialPanes ?? [])];
+  let tabSeq = 0;
+  let paneSeq = 0;
+  let startFailures = options.startFailures ?? 0;
+
+  function paramAfter(args: string[], flag: string): string | undefined {
+    const index = args.indexOf(flag);
+    return index >= 0 && index + 1 < args.length ? args[index + 1] : undefined;
+  }
+
+  const handler: MockHandler = (_file, args) => {
+    if (args[0] === "agent" && args[1] === "get") {
+      const key = args[2]!;
+      if (key === self.pane_id) return { result: { agent: self } };
+      const anchor = anchors[key];
+      if (anchor) return { result: { agent: anchor } };
+      throw cliError("agent_not_found", `agent target ${key} not found`);
+    }
+    if (args[0] === "tab" && args[1] === "create") {
+      tabSeq += 1;
+      paneSeq += 1;
+      const tabId = `wS:t${tabSeq}`;
+      const paneId = `wS:p${paneSeq}`;
+      const rootPane: MockPane = {
+        pane_id: paneId,
+        tab_id: tabId,
+        workspace_id: workspaceId,
+        cwd: paramAfter(args, "--cwd") ?? "/launch",
+      };
+      panes.push(rootPane);
+      return {
+        result: {
+          root_pane: { ...rootPane, focused: false },
+          tab: { tab_id: tabId, workspace_id: workspaceId, label: paramAfter(args, "--label"), pane_count: 1 },
+        },
+        type: "tab_created",
+      };
+    }
+    if (args[0] === "tab" && args[1] === "close") {
+      if (options.failTabClose) throw cliError("tab_close_failed", "tab close rejected");
+      const tabId = args[2]!;
+      const remaining = panes.filter((p) => p.tab_id !== tabId);
+      panes.splice(0, panes.length, ...remaining);
+      return { result: { type: "ok" } };
+    }
+    if (args[0] === "pane" && args[1] === "list") {
+      if (options.paneListOverride) return options.paneListOverride(panes);
+      return { result: { panes: panes.filter((p) => p.workspace_id === workspaceId) } };
+    }
+    if (args[0] === "pane" && args[1] === "get") {
+      const pane = panes.find((p) => p.pane_id === args[2]);
+      if (!pane) throw cliError("pane_not_found", `pane ${String(args[2])} not found`);
+      return { result: { pane: { ...pane, focused: false } }, type: "pane_info" };
+    }
+    if (args[0] === "pane" && args[1] === "split") {
+      const anchorPane = panes.find((p) => p.pane_id === args[2]);
+      if (!anchorPane) throw cliError("pane_not_found", `pane ${String(args[2])} not found`);
+      paneSeq += 1;
+      const newPane: MockPane = {
+        pane_id: `wS:p${paneSeq}`,
+        tab_id: anchorPane.tab_id,
+        workspace_id: workspaceId,
+        cwd: paramAfter(args, "--cwd") ?? anchorPane.cwd,
+      };
+      panes.push(newPane);
+      return { result: { pane: { ...newPane, focused: false } }, type: "pane_info" };
+    }
+    if (args[0] === "pane" && args[1] === "close") {
+      const paneId = args[2]!;
+      const index = panes.findIndex((p) => p.pane_id === paneId);
+      if (index >= 0) panes.splice(index, 1);
+      return { result: { type: "ok" } };
+    }
+    if (args[0] === "agent" && args[1] === "start") {
+      if (startFailures > 0) {
+        startFailures -= 1;
+        throw cliError("agent_not_ready", "pane is not ready");
+      }
+      return { result: { accepted: true } };
+    }
+    throw new Error(`unexpected mock args: ${args.join(" ")}`);
+  };
+
+  return { handler, state: { panes } };
+}
+
+/** Small config fixture with the placement mandatory in every entry. */
+function placementConfig(agents: Record<string, unknown>): string {
+  return JSON.stringify({ agents });
+}
+
 async function withTempProject(
   config: string | undefined,
   callback: (projectRoot: string) => Promise<void>,
@@ -809,137 +930,185 @@ test("Herdr control layer", async (t) => {
       ]);
     });
   });
-  await t.test("starts explicitly without project configuration and forwards a complete argv array", async () => {
+  await t.test("starts explicitly (no with) by allocating a new tab for the root pane", async () => {
     await withTempProject(undefined, async () => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
         const receipt = await startAgent({
           name: "worker-01",
-          pane: "wS:p22",
           kind: "pi",
           args: ["--model", "model-x", "--thinking", "high"],
         });
         assert.deepEqual(receipt, { status: "started", agent: "worker-01", kind: "pi" });
+        // Fresh self context → tab create (focus=false) → fresh pane list → resolved root pane → agent start.
         assert.deepEqual(calls.map((call) => call.args), [
-          ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p22", "--", "--model", "model-x", "--thinking", "high"],
+          ["agent", "get", "self-pane"],
+          ["tab", "create", "--workspace", "ws-1", "--cwd", process.cwd(), "--no-focus"],
+          ["pane", "list", "--workspace", "ws-1"],
+          ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p1", "--", "--model", "model-x", "--thinking", "high"],
         ]);
       });
     });
   });
-  await t.test("accepts the published JSON example through configured start", async () => {
-    const template = readFileSync(new URL("../examples/agent_config.example.json", import.meta.url), "utf8");
-    assert.doesNotThrow(() => JSON.parse(template));
-    await withTempProject(template, async () => {
+
+  await t.test("explicit relative cwd resolves against the adapter context directory", async () => {
+    await withTempProject(undefined, async (projectRoot) => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
-        const receipt = await startAgent({ name: "worker-template", pane: "wS:p6", config_agent: "example-single" });
-        assert.deepEqual(receipt, { status: "started", agent: "worker-template", kind: "pi" });
-        assert.deepEqual(calls.map((call) => call.args), [
-          ["agent", "start", "worker-template", "--kind", "pi", "--pane", "wS:p6", "--", "--model", "your-provider/your-model", "--thinking", "high"],
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        const receipt = await startAgent({
+          name: "worker-02",
+          kind: "pi",
+          args: [],
+          cwd: "slices/w1",
+        });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-02", kind: "pi" });
+        assert.deepEqual(calls[1]!.args, [
+          "tab", "create", "--workspace", "ws-1", "--cwd", `${projectRoot}/slices/w1`, "--no-focus",
         ]);
       });
     });
   });
-  await t.test("selects configured variants in round-robin order and rereads the JSON", async () => {
-    const config = JSON.stringify({
-      version: 1,
-      agents: {
-        "work-agent": {
-          strategy: "round-robin",
-          variants: [
-            { kind: "pi", args: ["--model", "provider-a/model-a", "--thinking", "high"] },
-            { kind: "agy", args: ["--model", "provider-b/model-b", "--effort", "high"] },
-          ],
-        },
+
+  await t.test("new-tab launch cwd falls back to the adapter context directory and workspace comes from live self context", async () => {
+    await withTempProject(undefined, async (projectRoot) => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({ workspaceId: "ws-9" });
+      await withMock(handler, async (calls) => {
+        const receipt = await startAgent({ name: "worker-03", kind: "agy", args: [] });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-03", kind: "agy" });
+        // Workspace id from the fresh live self record, cwd default = context directory.
+        assert.deepEqual(calls[1]!.args, ["tab", "create", "--workspace", "ws-9", "--cwd", projectRoot, "--no-focus"]);
+      });
+    });
+  });
+
+  await t.test("configured new_tab: label is presentation-only, tab created focus-free, receipt has no topology ids", async () => {
+    const config = placementConfig({
+      "worker": {
+        placement: { mode: "new_tab", label: "execute" },
+        variants: [{ kind: "pi", args: ["--model", "configured/model"] }],
       },
     });
     await withTempProject(config, async (projectRoot) => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
-        for (const [index, name] of ["worker-a", "worker-b", "worker-c"].entries()) {
-          await startAgent({ name, pane: `wS:p${index + 2}`, config_agent: "work-agent" });
-        }
-        assert.deepEqual(calls.map((call) => call.args), [
-          ["agent", "start", "worker-a", "--kind", "pi", "--pane", "wS:p2", "--", "--model", "provider-a/model-a", "--thinking", "high"],
-          ["agent", "start", "worker-b", "--kind", "agy", "--pane", "wS:p3", "--", "--model", "provider-b/model-b", "--effort", "high"],
-          ["agent", "start", "worker-c", "--kind", "pi", "--pane", "wS:p4", "--", "--model", "provider-a/model-a", "--thinking", "high"],
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        const receipt = await startAgent({ name: "worker-01", config_agent: "worker" });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-01", kind: "pi" });
+        assert.deepEqual(calls[0]!.args, ["agent", "get", "self-pane"]);
+        assert.deepEqual(calls[1]!.args, [
+          "tab", "create", "--workspace", "ws-1", "--cwd", projectRoot, "--label", "execute", "--no-focus",
         ]);
-        // Every configured start reads the current file; no stale JSON cache survives this edit.
-        writeFileSync(
-          join(projectRoot, ".agents", "agent_config.json"),
-          JSON.stringify({
-            version: 1,
-            agents: {
-              "work-agent": {
-                variants: [{ kind: "codex", args: ["--model", "provider-c/model-c"] }],
-              },
-            },
-          }),
-        );
-        const receipt = await startAgent({ name: "worker-d", pane: "wS:p5", config_agent: "work-agent" });
-        assert.deepEqual(receipt, { status: "started", agent: "worker-d", kind: "codex" });
-        assert.deepEqual(calls.at(-1)!.args, [
-          "agent", "start", "worker-d", "--kind", "codex", "--pane", "wS:p5", "--", "--model", "provider-c/model-c",
+        assert.deepEqual(calls[2]!.args, ["pane", "list", "--workspace", "ws-1"]);
+        assert.deepEqual(calls[3]!.args, [
+          "agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p1", "--", "--model", "configured/model",
         ]);
       });
     });
   });
-  await t.test("isolates round-robin cursors by config agent and project", async () => {
-    const projectAConfig = JSON.stringify({
-      version: 1,
-      agents: {
-        "work-agent": {
-          strategy: "round-robin",
-          variants: [
-            { kind: "pi", args: ["--model", "project-a/work-a"] },
-            { kind: "agy", args: ["--model", "project-a/work-b"] },
-          ],
-        },
-        "review-agent": {
-          strategy: "round-robin",
-          variants: [
-            { kind: "codex", args: ["--model", "project-a/review-a"] },
-            { kind: "pi", args: ["--model", "project-a/review-b"] },
-          ],
-        },
+
+  await t.test("accepts the published JSON example through configured new_tab start", async () => {
+    const template = readFileSync(new URL("../examples/agent_config.example.json", import.meta.url), "utf8");
+    assert.doesNotThrow(() => JSON.parse(template));
+    await withTempProject(template, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        const receipt = await startAgent({ name: "worker-template", config_agent: "example-single" });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-template", kind: "pi" });
+        assert.deepEqual(calls.at(-1)!.args, [
+          "agent", "start", "worker-template", "--kind", "pi", "--pane", "wS:p1", "--", "--model", "your-provider/your-model", "--thinking", "high",
+        ]);
+        assert.deepEqual(calls[1]!.args, ["tab", "create", "--workspace", "ws-1", "--cwd", process.cwd(), "--label", "example", "--no-focus"]);
+      });
+    });
+  });
+
+  await t.test("selects configured variants in round-robin order and rereads the JSON", async () => {
+    const config = placementConfig({
+      "work-agent": {
+        placement: { mode: "new_tab" },
+        strategy: "round-robin",
+        variants: [
+          { kind: "pi", args: ["--model", "provider-a/model-a", "--thinking", "high"] },
+          { kind: "agy", args: ["--model", "provider-b/model-b", "--effort", "high"] },
+        ],
       },
     });
-    const projectBConfig = JSON.stringify({
-      version: 1,
-      agents: {
-        "work-agent": {
-          strategy: "round-robin",
-          variants: [
-            { kind: "agy", args: ["--model", "project-b/work-a"] },
-            { kind: "pi", args: ["--model", "project-b/work-b"] },
-          ],
-        },
+    await withTempProject(config, async (projectRoot) => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        for (const name of ["worker-a", "worker-b", "worker-c"]) {
+          await startAgent({ name, config_agent: "work-agent" });
+        }
+        const starts = calls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
+        assert.deepEqual(starts.map((call) => [call.args[2], call.args[4]]), [
+          ["worker-a", "pi"],
+          ["worker-b", "agy"],
+          ["worker-c", "pi"],
+        ]);
+        // Every configured start reads the current file; no stale JSON cache.
+        writeFileSync(
+          join(projectRoot, ".agents", "agent_config.json"),
+          placementConfig({
+            "work-agent": {
+              placement: { mode: "new_tab" },
+              variants: [{ kind: "codex", args: ["--model", "provider-c/model-c"] }],
+            },
+          }),
+        );
+        const receipt = await startAgent({ name: "worker-d", config_agent: "work-agent" });
+        assert.deepEqual(receipt, { status: "started", agent: "worker-d", kind: "codex" });
+      });
+    });
+  });
+
+  await t.test("isolates round-robin cursors by config agent and project", async () => {
+    const projectAConfig = placementConfig({
+      "work-agent": {
+        placement: { mode: "new_tab" },
+        strategy: "round-robin",
+        variants: [
+          { kind: "pi", args: ["--model", "project-a/work-a"] },
+          { kind: "agy", args: ["--model", "project-a/work-b"] },
+        ],
+      },
+      "review-agent": {
+        placement: { mode: "new_tab" },
+        strategy: "round-robin",
+        variants: [
+          { kind: "codex", args: ["--model", "project-a/review-a"] },
+          { kind: "pi", args: ["--model", "project-a/review-b"] },
+        ],
+      },
+    });
+    const projectBConfig = placementConfig({
+      "work-agent": {
+        placement: { mode: "new_tab" },
+        strategy: "round-robin",
+        variants: [
+          { kind: "agy", args: ["--model", "project-b/work-a"] },
+          { kind: "pi", args: ["--model", "project-b/work-b"] },
+        ],
       },
     });
     await withTempProject(projectAConfig, async () => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
-        await startAgent({ name: "a-work-1", pane: "wS:a1", config_agent: "work-agent" });
-        await startAgent({ name: "a-review-1", pane: "wS:a2", config_agent: "review-agent" });
-        await startAgent({ name: "a-work-2", pane: "wS:a3", config_agent: "work-agent" });
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        await startAgent({ name: "a-work-1", config_agent: "work-agent" });
+        await startAgent({ name: "a-review-1", config_agent: "review-agent" });
+        await startAgent({ name: "a-work-2", config_agent: "work-agent" });
         await withTempProject(projectBConfig, async () => {
-          await startAgent({ name: "b-work-1", pane: "wS:b1", config_agent: "work-agent" });
-          await startAgent({ name: "b-work-2", pane: "wS:b2", config_agent: "work-agent" });
+          await startAgent({ name: "b-work-1", config_agent: "work-agent" });
+          await startAgent({ name: "b-work-2", config_agent: "work-agent" });
         });
-        await startAgent({ name: "a-work-3", pane: "wS:a4", config_agent: "work-agent" });
-        assert.deepEqual(calls.map((call) => [call.args[2], call.args[4]]), [
+        await startAgent({ name: "a-work-3", config_agent: "work-agent" });
+        const starts = calls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
+        assert.deepEqual(starts.map((call) => [call.args[2], call.args[4]]), [
           ["a-work-1", "pi"],
           ["a-review-1", "codex"],
           ["a-work-2", "agy"],
@@ -950,17 +1119,15 @@ test("Herdr control layer", async (t) => {
       });
     });
   });
+
   await t.test("keeps configured and explicit modes mutually exclusive and fails closed", async () => {
     await withTempProject(undefined, async () => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
         await assert.rejects(
           startAgent({
             name: "worker-01",
-            pane: "wS:p22",
             config_agent: "work-agent",
             kind: "pi",
             args: [],
@@ -968,34 +1135,31 @@ test("Herdr control layer", async (t) => {
           matchesCode("START_INPUT_INVALID"),
         );
         await assert.rejects(
-          startAgent({ name: "worker-01", pane: "wS:p22", kind: "pi" } as never),
+          startAgent({ name: "worker-01", kind: "pi" } as never),
           matchesCode("START_INPUT_INVALID"),
         );
         await assert.rejects(
-          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "work-agent" }),
+          startAgent({ name: "worker-01", config_agent: "work-agent" }),
           matchesCode("START_CONFIG_NOT_FOUND"),
         );
         assert.equal(calls.length, 0);
       });
     });
   });
+
   await t.test("rejects unknown configured entries and malformed configuration schemas", async () => {
-    const validConfig = JSON.stringify({
-      version: 1,
-      agents: {
-        "work-agent": {
-          variants: [{ kind: "pi" }],
-        },
+    const validConfig = placementConfig({
+      "work-agent": {
+        placement: { mode: "new_tab" },
+        variants: [{ kind: "pi" }],
       },
     });
     await withTempProject(validConfig, async () => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
         await assert.rejects(
-          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "missing-agent" }),
+          startAgent({ name: "worker-01", config_agent: "missing-agent" }),
           matchesCode("START_AGENT_NOT_FOUND"),
         );
         assert.equal(calls.length, 0);
@@ -1005,76 +1169,336 @@ test("Herdr control layer", async (t) => {
     const invalidJson = "{ this is not valid json";
     await withTempProject(invalidJson, async () => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
         await assert.rejects(
-          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "work-agent" }),
+          startAgent({ name: "worker-01", config_agent: "work-agent" }),
+          matchesCode("START_CONFIG_INVALID"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+  });
+
+  await t.test("config parser rejects legacy root schema-generation fields, missing/unknown placement", async () => {
+    const legacyRoot = JSON.stringify({ version: 1, agents: {} });
+    await withTempProject(legacyRoot, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "worker-01", config_agent: "worker" }),
+          (error: unknown) => error instanceof HerdrLinkError && error.code === "START_CONFIG_INVALID",
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+
+    const missingPlacement = JSON.stringify({ agents: { "worker": { variants: [{ kind: "pi" }] } } });
+    await withTempProject(missingPlacement, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "worker-01", config_agent: "worker" }),
           matchesCode("START_CONFIG_INVALID"),
         );
         assert.equal(calls.length, 0);
       });
     });
 
-    const invalidConfig = JSON.stringify({
-      version: 1,
-      agents: {
-        "work-agent": {
-          variants: [{ kind: "pi" }, { kind: "agy" }],
-        },
-      },
-    });
-    await withTempProject(invalidConfig, async () => {
+    const badMode = JSON.stringify({ agents: { "worker": { placement: { mode: "stacked" }, variants: [{ kind: "pi" }] } } });
+    await withTempProject(badMode, async () => {
       resetStartStateForTests();
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") return { result: { accepted: true } };
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
         await assert.rejects(
-          startAgent({ name: "worker-01", pane: "wS:p22", config_agent: "work-agent" }),
+          startAgent({ name: "worker-01", config_agent: "worker" }),
           matchesCode("START_CONFIG_INVALID"),
         );
+        assert.equal(calls.length, 0);
+      });
+    });
+  });
+
+  await t.test("config parser rejects placement `with` + label and validates variants unchanged", async () => {
+    const withLabel = JSON.stringify({ agents: { "worker": { placement: { mode: "with", label: "x" }, variants: [{ kind: "pi" }] } } });
+    await withTempProject(withLabel, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
         await assert.rejects(
-          startAgent({ name: "worker-01", pane: "wS:p22", kind: "pi", args: [1] } as never),
+          startAgent({ name: "worker-01", config_agent: "worker" }),
+          matchesCode("START_CONFIG_INVALID"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+
+    const multiNoStrategy = JSON.stringify({
+      agents: { "worker": { placement: { mode: "new_tab" }, variants: [{ kind: "pi" }, { kind: "agy" }] } },
+    });
+    await withTempProject(multiNoStrategy, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "worker-01", config_agent: "worker" }),
+          matchesCode("START_CONFIG_INVALID"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+  });
+
+  await t.test("input validation enforces the placement matrix before any allocation", async () => {
+    const newTabConfig = placementConfig({ "worker": { placement: { mode: "new_tab" }, variants: [{ kind: "pi" }] } });
+    await withTempProject(newTabConfig, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        // configured new_tab + with → invalid before allocation
+        await assert.rejects(
+          startAgent({ name: "w", config_agent: "worker", with: "anchor" }),
+          matchesCode("START_INPUT_INVALID"),
+        );
+        // configured new_tab + cwd → valid (optional)
+        const ok = await startAgent({ name: "w", config_agent: "worker", cwd: "/abs/worktree" });
+        assert.deepEqual(ok.kind, "pi");
+        assert.equal(calls.length, 4, "only the valid path reached allocation");
+      });
+    });
+
+    const withConfig = placementConfig({ "cv": { placement: { mode: "with" }, variants: [{ kind: "pi" }] } });
+    await withTempProject(withConfig, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        // configured with + cwd → invalid before allocation
+        await assert.rejects(
+          startAgent({ name: "w", config_agent: "cv", with: "anchor", cwd: "/x" }),
+          matchesCode("START_INPUT_INVALID"),
+        );
+        // configured with + missing with → invalid before allocation
+        await assert.rejects(
+          startAgent({ name: "w", config_agent: "cv" }),
+          matchesCode("START_INPUT_INVALID"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+
+    // explicit with + cwd → invalid before allocation
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "w", kind: "pi", args: [], with: "anchor", cwd: "/x" }),
           matchesCode("START_INPUT_INVALID"),
         );
         assert.equal(calls.length, 0);
       });
     });
   });
-  await t.test("does not fallback after a failed configured variant and maps Herdr rejection to START_FAILED", async () => {
-    const config = JSON.stringify({
-      version: 1,
-      agents: {
-        "work-agent": {
-          strategy: "round-robin",
-          variants: [
-            { kind: "pi", args: ["--model", "provider-a/model-a"] },
-            { kind: "agy", args: ["--model", "provider-b/model-b"] },
-          ],
-        },
+
+  await t.test("rejects a raw pane field in start input", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "w", kind: "pi", args: [], pane: "wS:p1" } as never),
+          matchesCode("START_INPUT_INVALID"),
+        );
+        assert.equal(calls.length, 0);
+      });
+    });
+  });
+
+  await t.test("with placement: configured `with` splits the anchor pane inheriting its live cwd", async () => {
+    const config = placementConfig({ "code-verifier": { placement: { mode: "with" }, variants: [{ kind: "pi", args: ["--model", "cv/model"] }] } });
+    await withTempProject(config, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({
+        anchors: { "worker-01": { name: "worker-01", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } },
+        initialPanes: [{ pane_id: "w1:p2", tab_id: "w1:t1", workspace_id: "ws-1", cwd: "/worktrees/slice-a" }],
+      });
+      await withMock(handler, async (calls) => {
+        const receipt = await startAgent({ name: "cv-01", config_agent: "code-verifier", with: "worker-01" });
+        assert.deepEqual(receipt, { status: "started", agent: "cv-01", kind: "pi" });
+        assert.deepEqual(calls.map((call) => call.args), [
+          ["agent", "get", "self-pane"],
+          ["agent", "get", "worker-01"],
+          ["pane", "get", "w1:p2"],
+          ["pane", "split", "w1:p2", "--direction", "right", "--cwd", "/worktrees/slice-a", "--no-focus"],
+          ["agent", "start", "cv-01", "--kind", "pi", "--pane", "wS:p1", "--", "--model", "cv/model"],
+        ]);
+      });
+    });
+  });
+
+  await t.test("with placement: explicit with creates a sibling pane, not a new tab", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({
+        anchors: { "worker-01": { name: "worker-01", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } },
+        initialPanes: [{ pane_id: "w1:p2", tab_id: "w1:t1", workspace_id: "ws-1", cwd: "/worktrees/slice-a" }],
+      });
+      await withMock(handler, async (calls) => {
+        const receipt = await startAgent({ name: "cv-01", kind: "pi", args: [], with: "worker-01" });
+        assert.deepEqual(receipt, { status: "started", agent: "cv-01", kind: "pi" });
+        assert.equal(calls.some((call) => call.args[0] === "tab" && call.args[1] === "create"), false);
+        assert.deepEqual(calls.at(-2)!.args, ["pane", "split", "w1:p2", "--direction", "right", "--cwd", "/worktrees/slice-a", "--no-focus"]);
+      });
+    });
+  });
+
+  await t.test("with placement: missing/invalid anchor fails before any split", async () => {
+    const config = placementConfig({ "cv": { placement: { mode: "with" }, variants: [{ kind: "pi" }] } });
+    await withTempProject(config, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler();
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "cv-01", config_agent: "cv", with: "ghost" }),
+          matchesCode("PEER_NOT_FOUND"),
+        );
+        assert.equal(calls.some((call) => call.args[0] === "pane" && call.args[1] === "split"), false);
+      });
+    });
+  });
+
+  await t.test("with placement: same-workspace is enforced on both agent and pane records", async () => {
+    const config = placementConfig({ "cv": { placement: { mode: "with" }, variants: [{ kind: "pi" }] } });
+    await withTempProject(config, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({
+        anchors: { "stranger": { name: "stranger", workspace_id: "ws-2", pane_id: "w2:p1", agent_status: "working" } },
+        initialPanes: [{ pane_id: "w2:p1", tab_id: "w2:t1", workspace_id: "ws-2", cwd: "/other" }],
+      });
+      await withMock(handler, async (calls) => {
+        // Cross-workspace anchor: agent-record guard rejects before any split.
+        await assert.rejects(
+          startAgent({ name: "cv-01", config_agent: "cv", with: "stranger" }),
+          matchesCode("PEER_NOT_FOUND"),
+        );
+        assert.equal(calls.some((call) => call.args[0] === "pane" && call.args[1] === "split"), false);
+      });
+    });
+  });
+
+  await t.test("with placement: pane-record workspace mismatch fails closed before any split", async () => {
+    const config = placementConfig({ "cv": { placement: { mode: "with" }, variants: [{ kind: "pi" }] } });
+    await withTempProject(config, async () => {
+      resetStartStateForTests();
+      // Anchor agent record matches self workspace (first guard passes); the
+      // anchor PANE record reports a different workspace, so the second
+      // layer guard must reject before any split.
+      const { handler } = startTopologyHandler({
+        anchors: { "worker-01": { name: "worker-01", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } },
+        initialPanes: [{ pane_id: "w1:p2", tab_id: "w1:t1", workspace_id: "ws-2", cwd: "/other" }],
+      });
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "cv-01", config_agent: "cv", with: "worker-01" }),
+          matchesCode("PEER_NOT_FOUND"),
+        );
+        assert.equal(calls.some((call) => call.args[0] === "pane" && call.args[1] === "split"), false);
+        // The pane was read; the mismatch was detected after the read.
+        assert.deepEqual(calls.at(-1)!.args, ["pane", "get", "w1:p2"]);
+      });
+    });
+  });
+
+  await t.test("rollback: new-tab root resolution failure closes the exact created tab", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({
+        paneListOverride: (panes) => ({ result: { panes: [...panes, { ...panes[0]!, pane_id: "wS:p9" }] } }),
+      });
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "w", kind: "pi", args: [] }),
+          matchesCode("START_FAILED"),
+        );
+        assert.deepEqual(calls.at(-1)!.args, ["tab", "close", "wS:t1"]);
+      });
+    });
+  });
+
+  await t.test("rollback: new-tab agent.start failure closes the exact created tab, no retry", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({ startFailures: 1 });
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "w", kind: "pi", args: [] }),
+          matchesCode("START_FAILED"),
+        );
+        assert.deepEqual(calls.at(-1)!.args, ["tab", "close", "wS:t1"]);
+        assert.equal(calls.filter((call) => call.args[1] === "start").length, 1, "no retry after rollback");
+      });
+    });
+  });
+
+  await t.test("rollback: with-placement agent.start failure closes the exact created sibling pane", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({
+        startFailures: 1,
+        anchors: { "worker-01": { name: "worker-01", workspace_id: "ws-1", pane_id: "w1:p2", agent_status: "working" } },
+        initialPanes: [{ pane_id: "w1:p2", tab_id: "w1:t1", workspace_id: "ws-1", cwd: "/worktrees/slice-a" }],
+      });
+      await withMock(handler, async (calls) => {
+        await assert.rejects(
+          startAgent({ name: "cv-01", kind: "pi", args: [], with: "worker-01" }),
+          matchesCode("START_FAILED"),
+        );
+        assert.deepEqual(calls.at(-1)!.args, ["pane", "close", "wS:p1"]);
+        assert.equal(calls.filter((call) => call.args[1] === "start").length, 1, "no retry after rollback");
+      });
+    });
+  });
+
+  await t.test("rollback failure never replaces the primary error", async () => {
+    await withTempProject(undefined, async () => {
+      resetStartStateForTests();
+      const { handler } = startTopologyHandler({ startFailures: 1, failTabClose: true });
+      await withMock(handler, async (calls) => {
+        const primary = await startAgent({ name: "w", kind: "pi", args: [] }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        assert.ok(primary instanceof HerdrLinkError);
+        assert.equal(primary.code, "START_FAILED");
+        assert.equal(calls.filter((call) => call.args[0] === "tab" && call.args[1] === "close").length, 1, "rollback attempt must not be counted against primary");
+      });
+    });
+  });
+
+  await t.test("failed configured start does not advance the round-robin cursor", async () => {
+    const config = placementConfig({
+      "work-agent": {
+        placement: { mode: "new_tab" },
+        strategy: "round-robin",
+        variants: [
+          { kind: "pi", args: ["--model", "provider-a/model-a"] },
+          { kind: "agy", args: ["--model", "provider-b/model-b"] },
+        ],
       },
     });
     await withTempProject(config, async () => {
       resetStartStateForTests();
-      let failed = false;
-      await withMock(async (_file, args) => {
-        if (args[0] === "agent" && args[1] === "start") {
-          if (!failed) {
-            failed = true;
-            throw cliError("agent_not_ready", "pane is not ready");
-          }
-          return { result: { accepted: true } };
-        }
-        throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-      }, async (calls) => {
+      const { handler } = startTopologyHandler({ startFailures: 1 });
+      await withMock(handler, async (calls) => {
         await assert.rejects(
-          startAgent({ name: "worker-a", pane: "wS:p2", config_agent: "work-agent" }),
+          startAgent({ name: "worker-a", config_agent: "work-agent" }),
           matchesCode("START_FAILED"),
         );
-        await startAgent({ name: "worker-b", pane: "wS:p3", config_agent: "work-agent" });
-        assert.deepEqual(calls.map((call) => call.args[4]), ["pi", "pi"], "failure keeps the cursor on the selected variant");
-        assert.equal(calls.length, 2, "a failed start must not trigger an automatic fallback start");
+        await startAgent({ name: "worker-b", config_agent: "work-agent" });
+        const starts = calls.filter((call) => call.args[0] === "agent" && call.args[1] === "start");
+        assert.deepEqual(starts.map((call) => call.args[4]), ["pi", "pi"], "failure keeps the cursor on the selected variant");
       });
     });
   });

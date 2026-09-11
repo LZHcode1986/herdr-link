@@ -1,7 +1,7 @@
 {
-  "version": 1,
   "agents": {
     "example-single": {
+      "placement": { "mode": "new_tab", "label": "example" },
       "variants": [
         {
           "kind": "pi",
@@ -15,6 +15,7 @@
       ]
     },
     "example-round-robin": {
+      "placement": { "mode": "new_tab", "label": "example round-robin" },
       "strategy": "round-robin",
       "variants": [
         {
@@ -31,6 +32,20 @@
           "args": [
             "--model",
             "provider-b/model-b",
+            "--thinking",
+            "high"
+          ]
+        }
+      ]
+    },
+    "example-with": {
+      "placement": { "mode": "with" },
+      "variants": [
+        {
+          "kind": "pi",
+          "args": [
+            "--model",
+            "your-provider/your-model",
             "--thinking",
             "high"
           ]

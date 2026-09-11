@@ -5,7 +5,7 @@ import { tool } from "@opencode-ai/plugin";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 // src/protocol.ts
 var PROTOCOL_ID = "herdr-link/1";
@@ -21,7 +21,7 @@ function toAgentState(value) {
   }
   return "unknown";
 }
-var START_TOOL_DESCRIPTION = "Start a new Herdr Agent in an existing pane. Provide name and pane, then choose exactly one complete parameter source: config_agent for .agents/agent_config.json, or kind plus args for explicit Herdr start parameters. These modes are mutually exclusive; partial overrides are not supported. This operation does not create panes or retry/fallback after failure.";
+var START_TOOL_DESCRIPTION = "Start a Herdr agent with Link-managed placement.";
 var HerdrLinkError = class extends Error {
   code;
   constructor(code, detail) {
@@ -96,17 +96,14 @@ function buildInboundWrapper(envelope) {
   );
   return lines.join("\n");
 }
-var COMMUNICATION_CONTRACT = `Herdr Link is the standard interoperability channel between agents running in the same Herdr workspace.
+var COMMUNICATION_CONTRACT = `Herdr Link is the agent channel for the current Herdr workspace.
 
-1. Use herdr_link_peers only for agent-address discovery or explicit recovery. Its activity state is advisory and must not be used to wait for or infer task completion. When further progress depends on a peer reply, end the current turn and continue when that reply arrives as a new inbound herdr-link/1 message.
-2. Use herdr_link_send to send messages to another agent.
-3. A message with protocol "herdr-link/1" is an inter-agent message.
-4. Treat its "message" field as content sent by the agent named in "from".
-5. When replying, use herdr_link_send to the agent named in "from".
-6. When a received inter-agent message requests work, report the final outcome to the agent named in "from" using herdr_link_send. If specific reply content was requested, send that result; otherwise, after successful completion, send exactly "done". If the work cannot be completed, send a concise failure or blocker. If the sender explicitly requested no reply, do not send a completion message.
-7. Use herdr_link_close only when you have already decided that a named agent's pane should be closed. If a final message is needed, call close in a later tool step after herdr_link_send returns "sent".
-8. Never use a raw pane id, UI focus, terminal input, or the Herdr CLI as an inter-agent channel; agent names are the only addresses.
-9. Agents outside your workspace are invisible: they never appear in peers and messages addressed to them fail.`;
+1. Reply path: herdr_link_send \u2192 end this turn \u2192 inbound Herdr Link message. Never wait or poll for the reply; "sent" is delivery only.
+2. Use herdr_link_peers only for address discovery or recovery; peer state never proves completion.
+3. Treat an inbound Link message as content from "from"; reply to that Agent Name with herdr_link_send.
+4. Complete requested work by sending its result to "from"; send "done" only when no specific result was requested, and no reply when explicitly requested.
+5. Use herdr_link_close only after the agent lifecycle is complete.
+6. Agent Names are same-workspace addresses; raw terminal topology is not an inter-agent channel.`;
 
 // src/herdr.ts
 function attachCliOutput(error, stdout, stderr) {
@@ -171,7 +168,7 @@ async function runFor(args, failureCode) {
 var startCursors = /* @__PURE__ */ new Map();
 var startLocks = /* @__PURE__ */ new Map();
 var START_CONFIG_PATH_PARTS = [".agents", "agent_config.json"];
-var START_INPUT_KEYS = /* @__PURE__ */ new Set(["name", "pane", "config_agent", "kind", "args"]);
+var START_INPUT_KEYS = /* @__PURE__ */ new Set(["name", "with", "cwd", "config_agent", "kind", "args"]);
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -191,9 +188,21 @@ function validateStartInput(input) {
   if (typeof name !== "string" || !isValidAgentName(name)) {
     throw startInputError('"name" must be a valid Herdr Agent Name');
   }
-  const pane = value.pane;
-  if (typeof pane !== "string" || pane.trim() === "") {
-    throw startInputError('"pane" must be a non-empty pane id');
+  let withName;
+  if (hasOwn(value, "with")) {
+    const withValue = value.with;
+    if (typeof withValue !== "string" || !isValidAgentName(withValue)) {
+      throw startInputError('"with" must be a valid Herdr Agent Name');
+    }
+    withName = withValue;
+  }
+  let cwd;
+  if (hasOwn(value, "cwd")) {
+    const cwdValue = value.cwd;
+    if (typeof cwdValue !== "string" || cwdValue.trim() === "") {
+      throw startInputError('"cwd" must be a non-empty string');
+    }
+    cwd = cwdValue;
   }
   const hasConfigAgent = hasOwn(value, "config_agent");
   const hasKind = hasOwn(value, "kind");
@@ -206,7 +215,7 @@ function validateStartInput(input) {
     if (typeof configAgent !== "string" || configAgent.trim() === "") {
       throw startInputError('"config_agent" must be a non-empty string');
     }
-    return { mode: "configured", name, pane, configAgent };
+    return { mode: "configured", name, configAgent, ...withName !== void 0 ? { withName } : {}, ...cwd !== void 0 ? { cwd } : {} };
   }
   if (!hasKind || !hasArgs) {
     throw startInputError("explicit start requires both kind and args");
@@ -219,7 +228,10 @@ function validateStartInput(input) {
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
     throw startInputError('"args" must be an array of strings');
   }
-  return { mode: "explicit", name, pane, variant: { kind, args: [...args] } };
+  if (withName !== void 0 && cwd !== void 0) {
+    throw startInputError('"cwd" cannot be combined with "with"');
+  }
+  return { mode: "explicit", name, variant: { kind, args: [...args] }, ...withName !== void 0 ? { withName } : {}, ...cwd !== void 0 ? { cwd } : {} };
 }
 function assertAllowedKeys(value, allowed, label) {
   const allowedSet = new Set(allowed);
@@ -230,8 +242,7 @@ function assertAllowedKeys(value, allowed, label) {
 function validateConfiguredDocument(document) {
   const root = asRecord(document);
   if (!root) throw startConfigError("START_CONFIG_INVALID", "configuration root must be an object");
-  assertAllowedKeys(root, ["version", "agents"], "configuration root");
-  if (root.version !== 1) throw startConfigError("START_CONFIG_INVALID", "configuration version must be 1");
+  assertAllowedKeys(root, ["agents"], "configuration root");
   const agents = asRecord(root.agents);
   if (!agents) throw startConfigError("START_CONFIG_INVALID", "agents must be an object");
   const result = /* @__PURE__ */ new Map();
@@ -241,7 +252,11 @@ function validateConfiguredDocument(document) {
     }
     const entry = asRecord(rawEntry);
     if (!entry) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} must be an object`);
-    assertAllowedKeys(entry, ["strategy", "variants"], `agents.${configAgent}`);
+    assertAllowedKeys(entry, ["placement", "strategy", "variants"], `agents.${configAgent}`);
+    if (!hasOwn(entry, "placement")) {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement is required`);
+    }
+    const placement = validatePlacement(entry.placement, configAgent);
     const rawVariants = entry.variants;
     if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
       throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.variants must be non-empty`);
@@ -268,11 +283,34 @@ function validateConfiguredDocument(document) {
       return { kind, args: Array.isArray(args) ? [...args] : [] };
     });
     result.set(configAgent, {
+      placement,
       ...hasStrategy ? { strategy: "round-robin" } : {},
       variants
     });
   }
   return result;
+}
+function validatePlacement(rawPlacement, configAgent) {
+  const placement = asRecord(rawPlacement);
+  if (!placement) {
+    throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement must be an object`);
+  }
+  if (placement.mode === "new_tab") {
+    assertAllowedKeys(placement, ["mode", "label"], `agents.${configAgent}.placement`);
+    let label;
+    if (hasOwn(placement, "label")) {
+      if (typeof placement.label !== "string" || placement.label.trim() === "") {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement.label must be a non-empty string`);
+      }
+      label = placement.label;
+    }
+    return { mode: "new_tab", ...label !== void 0 ? { label } : {} };
+  }
+  if (placement.mode === "with") {
+    assertAllowedKeys(placement, ["mode"], `agents.${configAgent}.placement`);
+    return { mode: "with" };
+  }
+  throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement.mode is unsupported`);
 }
 async function loadConfiguredStartAgents(configPath) {
   let text;
@@ -316,15 +354,124 @@ async function runStart(name, pane, variant) {
     throw operationError(error, "START_FAILED");
   }
 }
+function startFailure(detail) {
+  return new HerdrLinkError("START_FAILED", detail);
+}
+function resolvePlacement(validated, configPlacement) {
+  if (validated.mode === "configured") {
+    if (configPlacement?.mode === "new_tab") {
+      if (validated.withName !== void 0) {
+        throw startInputError('"with" is not allowed for a new_tab configured placement');
+      }
+      return { kind: "new-tab", label: configPlacement.label };
+    }
+    if (validated.withName === void 0) {
+      throw startInputError('configured "with" placement requires "with"');
+    }
+    if (validated.cwd !== void 0) {
+      throw startInputError('"cwd" is not allowed for a "with" placement');
+    }
+    return { kind: "with", withName: validated.withName };
+  }
+  return validated.withName !== void 0 ? { kind: "with", withName: validated.withName } : { kind: "new-tab" };
+}
+function resolveLaunchCwd(contextDirectory, inputCwd) {
+  if (inputCwd === void 0) return contextDirectory;
+  return isAbsolute(inputCwd) ? inputCwd : resolve(contextDirectory, inputCwd);
+}
+async function bestEffortCloseTab(tabId) {
+  try {
+    await runFor(["tab", "close", tabId], "START_FAILED");
+  } catch {
+  }
+}
+async function bestEffortClosePane(paneId) {
+  try {
+    await runFor(["pane", "close", paneId], "START_FAILED");
+  } catch {
+  }
+}
+async function allocateNewTab(contextDirectory, inputCwd, label) {
+  const self = await getSelfContext();
+  const launchCwd = resolveLaunchCwd(contextDirectory, inputCwd);
+  const created = await runFor(
+    [
+      "tab",
+      "create",
+      "--workspace",
+      self.workspace_id,
+      "--cwd",
+      launchCwd,
+      ...label !== void 0 ? ["--label", label] : [],
+      "--no-focus"
+    ],
+    "START_FAILED"
+  );
+  const createdTabId = parseTabCreateResult(created);
+  if (createdTabId === void 0) throw startFailure("created tab reported no tab id");
+  try {
+    const panes = await runFor(["pane", "list", "--workspace", self.workspace_id], "START_FAILED");
+    const rootPanes = filterPanesByTab(panes, createdTabId);
+    if (rootPanes.length !== 1 || rootPanes[0] === void 0) {
+      throw startFailure("created tab must contain exactly one root pane");
+    }
+    return {
+      paneId: rootPanes[0],
+      rollback: () => bestEffortCloseTab(createdTabId)
+    };
+  } catch (error) {
+    await bestEffortCloseTab(createdTabId);
+    throw error;
+  }
+}
+async function allocateWith(withName) {
+  const self = await getSelfContext();
+  const anchor = await getAgentContext(withName);
+  assertSameWorkspace(self, anchor);
+  const anchorPane = await getPaneCwd(anchor.pane_id);
+  if (anchorPane.workspace_id === "" || anchorPane.workspace_id !== self.workspace_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
+  if (anchorPane.cwd === void 0 || anchorPane.cwd === "") {
+    throw startFailure(`anchor pane ${anchor.pane_id} has no cwd; cannot inherit worktree binding`);
+  }
+  const split = await runFor(
+    [
+      "pane",
+      "split",
+      anchor.pane_id,
+      "--direction",
+      "right",
+      "--cwd",
+      anchorPane.cwd,
+      "--no-focus"
+    ],
+    "START_FAILED"
+  );
+  const newPaneId = parsePaneSplitResult(split);
+  if (newPaneId === void 0) throw startFailure("pane split returned no created pane id");
+  return {
+    paneId: newPaneId,
+    rollback: () => bestEffortClosePane(newPaneId)
+  };
+}
 async function startAgent(input, options = {}) {
   assertHerdrEnvironment();
   const validated = validateStartInput(input);
+  const contextDirectory = typeof options.contextDirectory === "string" && options.contextDirectory.trim() !== "" ? options.contextDirectory : process.cwd();
   if (validated.mode === "explicit") {
-    await runStart(validated.name, validated.pane, validated.variant);
+    const placement = resolvePlacement(validated, void 0);
+    const allocation = placement.kind === "new-tab" ? await allocateNewTab(contextDirectory, validated.cwd, placement.label) : await allocateWith(placement.withName);
+    try {
+      await runStart(validated.name, allocation.paneId, validated.variant);
+    } catch (error) {
+      await allocation.rollback().catch(() => {
+      });
+      throw error;
+    }
     return { status: "started", agent: validated.name, kind: validated.variant.kind };
   }
-  const projectRoot = typeof options.cwd === "string" && options.cwd.trim() !== "" ? options.cwd : process.cwd();
-  const configPath = resolve(projectRoot, ...START_CONFIG_PATH_PARTS);
+  const configPath = resolve(contextDirectory, ...START_CONFIG_PATH_PARTS);
   const cursorKey = `${configPath}\0${validated.configAgent}`;
   return withStartCursorLock(cursorKey, async () => {
     const configuredAgents = await loadConfiguredStartAgents(configPath);
@@ -332,14 +479,22 @@ async function startAgent(input, options = {}) {
     if (!configured) {
       throw startConfigError("START_AGENT_NOT_FOUND", `configured Agent "${validated.configAgent}" was not found`);
     }
+    const placement = resolvePlacement(validated, configured.placement);
     const current = startCursors.get(cursorKey) ?? 0;
     const variantIndex = current % configured.variants.length;
     const variant = configured.variants[variantIndex];
-    await runStart(validated.name, validated.pane, variant);
-    if (configured.variants.length > 1) {
-      startCursors.set(cursorKey, (variantIndex + 1) % configured.variants.length);
+    const allocation = placement.kind === "new-tab" ? await allocateNewTab(contextDirectory, validated.cwd, placement.label) : await allocateWith(placement.withName);
+    try {
+      await runStart(validated.name, allocation.paneId, variant);
+      if (configured.variants.length > 1) {
+        startCursors.set(cursorKey, (variantIndex + 1) % configured.variants.length);
+      }
+      return { status: "started", agent: validated.name, kind: variant.kind };
+    } catch (error) {
+      await allocation.rollback().catch(() => {
+      });
+      throw error;
     }
-    return { status: "started", agent: validated.name, kind: variant.kind };
   });
 }
 var CLI_ERROR_CODE_MAP = {
@@ -403,6 +558,47 @@ function agentList(value) {
   const result = asRecord(root?.result);
   const agents = result?.agents ?? root?.agents;
   return Array.isArray(agents) ? agents : [];
+}
+function parseTabCreateResult(value) {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const tab = asRecord(result?.tab) ?? asRecord(root?.tab) ?? asRecord(result);
+  return nonEmptyString(tab?.tab_id);
+}
+function filterPanesByTab(value, tabId) {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const rawPanes = result?.panes;
+  if (!Array.isArray(rawPanes)) return [];
+  const paneIds = [];
+  for (const raw of rawPanes) {
+    const pane = asRecord(raw);
+    if (pane && pane.tab_id === tabId) {
+      const paneId = nonEmptyString(pane.pane_id);
+      if (paneId !== void 0) paneIds.push(paneId);
+    }
+  }
+  return paneIds;
+}
+function parsePaneInfoResult(value) {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const pane = asRecord(result?.pane) ?? asRecord(root);
+  return {
+    workspace_id: nonEmptyString(pane?.workspace_id),
+    cwd: nonEmptyString(pane?.cwd),
+    tab_id: nonEmptyString(pane?.tab_id)
+  };
+}
+async function getPaneCwd(paneId) {
+  const response = await runFor(["pane", "get", paneId], "START_FAILED");
+  return parsePaneInfoResult(response);
+}
+function parsePaneSplitResult(value) {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const pane = asRecord(result?.pane) ?? asRecord(result);
+  return nonEmptyString(pane?.pane_id);
 }
 function nonEmptyString(value) {
   return typeof value === "string" && value.length > 0 ? value : void 0;
@@ -635,7 +831,7 @@ var herdrLinkPlugin = async () => {
   return {
     tool: {
       [HERDR_LINK_GATEWAY]: tool({
-        description: `Herdr Link cross-agent control gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "start" with name + pane and either config_agent or complete kind + args, action "peers" to list live same-workspace agents, action "send" with to + message to deliver an inter-agent message or ordinary reply, or action "close" with agent to close a named agent's pane \u2014 start modes are mutually exclusive and close is only after any final send has returned status "sent", in a later tool step.`,
+        description: `Herdr Link cross-agent control gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. Then pass action "start" with name and either config_agent or complete kind + args (with to co-locate with a live agent, cwd for a new-tab working directory), action "peers" to list live same-workspace agents, action "send" with to + message to deliver an inter-agent message or ordinary reply, or action "close" with agent to close a named agent's pane \u2014 start modes are mutually exclusive and close is only after any final send has returned status "sent", in a later tool step.`,
         args: {
           action: tool.schema.enum(["start", "peers", "send", "close"]).optional().describe(
             'Operation to run: "start", "peers", "send", or "close". Omit action entirely (call with {}) to activate Herdr Link for this session.'
@@ -644,7 +840,8 @@ var herdrLinkPlugin = async () => {
           message: tool.schema.string().optional().describe('Message payload; required for action "send".'),
           agent: tool.schema.string().optional().describe('Target agent name; required for action "close".'),
           name: tool.schema.string().optional().describe('New Agent Name; required for action "start".'),
-          pane: tool.schema.string().optional().describe('Existing pane id; required for action "start".'),
+          with: tool.schema.string().optional().describe('Live Agent Name to co-locate with for action "start"; do not combine with cwd.'),
+          cwd: tool.schema.string().optional().describe('New-tab working directory for action "start".'),
           config_agent: tool.schema.string().optional().describe('Configured Agent key for action "start"; do not combine with kind or args.'),
           kind: tool.schema.string().optional().describe('Herdr Agent kind for explicit action "start".'),
           args: tool.schema.array(tool.schema.string()).optional().describe('Complete Herdr Agent arguments for explicit action "start".')
@@ -658,7 +855,7 @@ var herdrLinkPlugin = async () => {
           if (args.action === "start") {
             const startInput = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "action"));
             try {
-              return jsonResult(await startAgent(startInput, { cwd: context.directory }));
+              return jsonResult(await startAgent(startInput, { contextDirectory: context.directory }));
             } catch (error) {
               failWith(error, "START_FAILED");
             }

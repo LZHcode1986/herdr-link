@@ -1,6 +1,6 @@
 {
   "name": "herdr-link",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "pi": {
     "extensions": [
       "./src/pi.ts"

@@ -7,7 +7,7 @@
  * Tool execution reuses the herdr.ts control layer. Tool gating and error semantics follow
  * PROTOCOL.md §7; tool-name presentation follows PROTOCOL.md §4.6.
  *
- * Lazy presentation (blueprint v2): the tool surface is session-local and
+ * Lazy presentation: the tool surface is session-local and
  * dormant until activated. Outside Herdr, `tools/list` is empty. Inside
  * Herdr, a dormant session lists only the Tier 0 `herdr_link` gateway;
  * calling the gateway with `{}` activates THIS server session (per stdio
@@ -39,7 +39,7 @@ import {
 
 export const MCP_SERVER_NAME = "herdr-link";
 /** Keep in sync with package.json "version" (serverInfo is informational). */
-export const MCP_SERVER_VERSION = "0.4.1";
+export const MCP_SERVER_VERSION = "0.5.0";
 /** Fallback protocol version advertised when the client sends none. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
@@ -79,24 +79,23 @@ type CanonicalToolName = (typeof HERDR_LINK_TOOLS)[number];
 const NORMAL_MESSAGING_RULE = "Use Herdr Link, not raw Herdr CLI, pane ids, or terminal input, for normal inter-agent messaging.";
 const TOOL_DESCRIPTIONS: Record<CanonicalToolName, string> = {
   [TOOL_START]: `${START_TOOL_DESCRIPTION} ${NORMAL_MESSAGING_RULE}`,
-  [TOOL_PEERS]: `Discover live named peers in the same Herdr workspace; each state is advisory and Agent Names are the only addresses. ${NORMAL_MESSAGING_RULE}`,
-  [TOOL_SEND]:
-    `Send a herdr-link/1 message to a live named peer in your own workspace; status "sent" means Herdr accepted delivery. ${NORMAL_MESSAGING_RULE}`,
-  [TOOL_CLOSE]:
-    `Close the pane currently hosting a named same-workspace agent. If you need to send a final message before closing, complete the send first and call close in a later tool step. ${NORMAL_MESSAGING_RULE}`,
+  [TOOL_PEERS]: `List live same-workspace agent names. ${NORMAL_MESSAGING_RULE}`,
+  [TOOL_SEND]: `Send a Link message; "sent" is delivery only. ${NORMAL_MESSAGING_RULE}`,
+  [TOOL_CLOSE]: `Close a named agent's pane. If a final message is needed, send first and close in a later tool step. ${NORMAL_MESSAGING_RULE}`,
 };
 
 const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {
   [TOOL_START]: {
     type: "object",
     properties: {
-      name: { type: "string", description: "New Herdr Agent Name" },
-      pane: { type: "string", description: "Existing pane id" },
-      config_agent: { type: "string", description: "Configured Agent key; do not combine with kind or args" },
-      kind: { type: "string", description: "Herdr Agent kind for explicit start" },
-      args: { type: "array", items: { type: "string" }, description: "Complete Herdr Agent arguments for explicit start" },
+      name: { type: "string", description: "New agent name." },
+      with: { type: "string", description: "Co-locate with this agent." },
+      cwd: { type: "string", description: "New-tab working directory." },
+      config_agent: { type: "string", description: "Config key." },
+      kind: { type: "string", description: "Agent kind." },
+      args: { type: "array", items: { type: "string" }, description: "Agent arguments." },
     },
-    required: ["name", "pane"],
+    required: ["name"],
     oneOf: [
       { required: ["config_agent"], not: { anyOf: [{ required: ["kind"] }, { required: ["args"] }] } },
       { required: ["kind", "args"], not: { required: ["config_agent"] } },
@@ -129,7 +128,7 @@ const FALLBACK_ERROR_CODE: Record<CanonicalToolName, LinkErrorCode> = {
 };
 
 /**
- * Tier 0 gateway tool (blueprint v2): the single always-present registration
+ * Tier 0 gateway tool: the single always-present registration
  * surface while dormant, and the explicit action-dispatch fallback for hosts
  * that do not react to `notifications/tools/list_changed`.
  */
@@ -274,7 +273,7 @@ export function createRequestHandler(
   const runStart = deps.startAgent ?? startAgent;
   const notify = deps.notify ?? stdoutNotificationSink;
 
-  /** Session-local lazy activation (blueprint v2). True ⇒ Tier 1 tools are listed. */
+  /** Session-local lazy activation. True ⇒ Tier 1 tools are listed. */
   let activated = false;
 
   /**
@@ -443,7 +442,7 @@ export function createRequestHandler(
       case "ping":
         return respond(id, {});
       case "tools/list": {
-        // Zero side-effect gate (ADR-013) + lazy presentation (blueprint v2):
+        // Zero side-effect gate (ADR-013) + lazy presentation:
         // outside Herdr nothing; dormant only the Tier 0 gateway; active the
         // gateway plus the canonical Tier 1 tools.
         if (!environmentOk()) return respond(id, { tools: [] });
@@ -526,7 +525,7 @@ function contractWithAppendix(appendix: string): string {
  * Contract text for prefix-style MCP hosts (e.g. Codex): tools are exposed as
  * independent `mcp__<namespace>__<canonical>` functions. `namespace` is the
  * host tool namespace and must be explicit. Presentation is lazy: only the
- * gateway is listed until the model activates it (blueprint v2).
+ * gateway is listed until the model activates it.
  */
 export function buildMcpPrefixedCommunicationContract(namespace: string): string {
   const [peers, send, close] = HERDR_LINK_COMMUNICATION_TOOLS.map((name) =>
@@ -551,7 +550,7 @@ export function buildMcpPrefixedCommunicationContract(namespace: string): string
  * Contract text for wrapper-style MCP hosts (e.g. AGY's call_mcp_tool): the
  * model invokes one native wrapper carrying ServerName/ToolName/Arguments
  * instead of per-tool functions (PROTOCOL.md §4.6 wrapper form). Both values
- * must be explicit. Presentation is lazy (blueprint v2): activate the gateway
+ * must be explicit. Presentation is lazy: activate the gateway
  * first, then address the canonical tools through the same wrapper.
  */
 export function buildMcpWrapperCommunicationContract(

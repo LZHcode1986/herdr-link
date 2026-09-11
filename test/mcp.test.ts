@@ -264,9 +264,10 @@ test("MCP server request handler", async (t) => {
       assert.equal((tool.inputSchema as Record<string, unknown>).type, "object");
     }
     const descriptionByName = new Map(tools.map((tool) => [tool.name, String(tool.description)]));
-    assert.match(descriptionByName.get("herdr_link_peers") ?? "", /same Herdr workspace/);
-    assert.match(descriptionByName.get("herdr_link_send") ?? "", /status "sent"/);
+    assert.match(descriptionByName.get("herdr_link_peers") ?? "", /same-workspace agent names/);
+    assert.match(descriptionByName.get("herdr_link_send") ?? "", /"sent" is delivery only/);
     assert.match(descriptionByName.get("herdr_link_close") ?? "", /later tool step/);
+    assert.match(descriptionByName.get("herdr_link_start") ?? "", /Link-managed placement/);
     for (const name of [HERDR_LINK_GATEWAY, ...HERDR_LINK_TOOLS]) {
       assert.match(descriptionByName.get(name) ?? "", /Use Herdr Link, not raw Herdr CLI/);
     }
@@ -285,6 +286,13 @@ test("MCP server request handler", async (t) => {
     assertBasicString(sendProperties.message);
     assert.deepEqual(Object.keys(sendProperties), ["to", "message"]);
     assertBasicString(closeProperties.agent);
+    // Canonical start schema (adapter parity): no raw pane, with?/cwd? present.
+    const startSchema = byName.get("herdr_link_start") as Record<string, unknown>;
+    assert.deepEqual(startSchema.required, ["name"]);
+    const startProperties = startSchema.properties as Record<string, unknown>;
+    assert.equal(startProperties.pane, undefined, "raw pane must not be model-facing");
+    assert.equal(typeof startProperties.with, "object");
+    assert.equal(typeof startProperties.cwd, "object");
   });
 
   await t.test("a direct Tier 1 call while dormant activates deterministically, then executes", async () => {
@@ -735,6 +743,8 @@ function writeFakeHerdrBinary(directory: string): string {
       '      printf \'{"result":{"accepted":true}}\'',
       "    fi ;;",
       '  "pane close") printf \'{"result":{"closed":true}}\';;',
+      '  "tab create") printf \'{"result":{"tab":{"tab_id":"w9:t1","workspace_id":"ws-main"},"root_pane":{"pane_id":"w9:p2","tab_id":"w9:t1","workspace_id":"ws-main","cwd":"/launch"}}}\';;',
+      '  "pane list") printf \'{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t1","workspace_id":"ws-main","cwd":"/launch"}]}}\';;',
       "  *) printf '{\"error\":{\"code\":\"agent_not_found\",\"message\":\"agent target not found\"}}'; exit 1;;",
       "esac",
       "",
@@ -876,7 +886,7 @@ test("spawned MCP server over real stdio", async (t) => {
           method: "tools/call",
           params: {
             name: TOOL_START,
-            arguments: { name: "worker-start", pane: "w9:p2", kind: "pi", args: ["--model", "model-x"] },
+            arguments: { name: "worker-start", kind: "pi", args: ["--model", "model-x"] },
           },
         });
         const startedResult = started.result as { content: Array<{ text: string }>; isError?: boolean };
@@ -956,9 +966,9 @@ test("spawned MCP server over real stdio", async (t) => {
       writeFileSync(
         join(projectRoot, ".agents", "agent_config.json"),
         JSON.stringify({
-          version: 1,
           agents: {
             "work-agent": {
+              placement: { mode: "new_tab" },
               variants: [{ kind: "pi", args: ["--model", "configured/model"] }],
             },
           },
@@ -986,7 +996,7 @@ test("spawned MCP server over real stdio", async (t) => {
           method: "tools/call",
           params: {
             name: TOOL_START,
-            arguments: { name: "worker-config", pane: "w9:p3", config_agent: "work-agent" },
+            arguments: { name: "worker-config", config_agent: "work-agent" },
           },
         });
         const notification = await server.next("configured start list_changed notification");

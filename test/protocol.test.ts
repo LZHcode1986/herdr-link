@@ -143,9 +143,7 @@ test("tiered naming constants expose gateway and canonical tool names", () => {
   }
 });
 test("start capability exposes independent input and error vocabulary", () => {
-  assert.match(START_TOOL_DESCRIPTION, /config_agent/);
-  assert.match(START_TOOL_DESCRIPTION, /kind plus args/);
-  assert.match(START_TOOL_DESCRIPTION, /mutually exclusive/);
+  assert.match(START_TOOL_DESCRIPTION, /Link-managed placement/);
   for (const code of [
     "START_CONFIG_NOT_FOUND",
     "START_AGENT_NOT_FOUND",
@@ -172,7 +170,7 @@ test("AGENT_STATES is the closed state vocabulary and toAgentState maps onto it"
   assert.equal(toAgentState(undefined), "unknown");
 });
 
-test("PeerDirectory and AgentContext use the blueprint shapes without topology ids", () => {
+test("PeerDirectory and AgentContext expose no topology ids to the model", () => {
   const directory: PeerDirectory = {
     self: { name: "brain", state: "idle" },
     peers: [
@@ -213,21 +211,22 @@ test("COMMUNICATION_CONTRACT states compact same-workspace send/reply/close sema
 
   // Same-workspace addressing…
   // …passive-wait semantics…
-  assert.match(COMMUNICATION_CONTRACT, /herdr_link_peers only for agent-address discovery or explicit recovery/);
-  assert.match(COMMUNICATION_CONTRACT, /activity state is advisory and must not be used to wait for or infer task completion/);
-  assert.match(COMMUNICATION_CONTRACT, /When further progress depends on a peer reply, end the current turn/);
-  assert.match(COMMUNICATION_CONTRACT, /continue when that reply arrives as a new inbound herdr-link\/1 message/);
-  assert.match(COMMUNICATION_CONTRACT, /same Herdr workspace/);
-  assert.match(COMMUNICATION_CONTRACT, /outside your workspace/);
-  // …send/reply semantics…
-  assert.match(COMMUNICATION_CONTRACT, /herdr-link\/1/);
-  assert.match(COMMUNICATION_CONTRACT, /When replying, use herdr_link_send to the agent named in "from"/);
-  assert.match(COMMUNICATION_CONTRACT, /exactly "done"/);
-  assert.match(COMMUNICATION_CONTRACT, /failure or blocker/);
-  assert.match(COMMUNICATION_CONTRACT, /explicitly requested no reply/);
-  // …and close sequencing after a confirmed send.
-  assert.match(COMMUNICATION_CONTRACT, /returns "sent"/);
-  assert.match(COMMUNICATION_CONTRACT, /later tool step/);
+  // Reply path: send → end this turn → inbound resume; "sent" is delivery only.
+  assert.match(COMMUNICATION_CONTRACT, /herdr_link_send → end this turn → inbound Herdr Link message/);
+  assert.match(COMMUNICATION_CONTRACT, /"sent" is delivery only/);
+  // peers cannot prove completion.
+  assert.match(COMMUNICATION_CONTRACT, /herdr_link_peers only for address discovery or recovery/);
+  assert.match(COMMUNICATION_CONTRACT, /peer state never proves completion/);
+  // inbound content from "from"; reply to that Agent Name.
+  assert.match(COMMUNICATION_CONTRACT, /Treat an inbound Link message as content from "from"/);
+  assert.match(COMMUNICATION_CONTRACT, /reply to that Agent Name with herdr_link_send/);
+  // result to "from"; "done" only when no specific result requested; no reply when explicitly requested.
+  assert.match(COMMUNICATION_CONTRACT, /send "done" only when no specific result was requested/);
+  assert.match(COMMUNICATION_CONTRACT, /no reply when explicitly requested/);
+  // close is lifecycle-driven; Agent Names are same-workspace addresses.
+  assert.match(COMMUNICATION_CONTRACT, /herdr_link_close only after the agent lifecycle is complete/);
+  assert.match(COMMUNICATION_CONTRACT, /Agent Names are same-workspace addresses/);
+  assert.match(COMMUNICATION_CONTRACT, /raw terminal topology is not an inter-agent channel/);
 });
 
 test("PROTOCOL.md §3 and MCP wiring §1.1 exactly match the machine Contract source", () => {

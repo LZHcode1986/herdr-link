@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import {
   AGENT_ERROR_DETAILS,
   buildEnvelope,
@@ -108,7 +108,13 @@ interface ValidatedStartVariant {
   args: string[];
 }
 
+/** Placing a configured Agent: a fresh tab, or co-located with a live anchor Agent. */
+type ValidatedPlacement =
+  | { mode: "new_tab"; label?: string }
+  | { mode: "with" };
+
 interface ConfiguredStartAgent {
+  placement: ValidatedPlacement;
   strategy?: "round-robin";
   variants: ValidatedStartVariant[];
 }
@@ -116,7 +122,7 @@ interface ConfiguredStartAgent {
 const startCursors = new Map<string, number>();
 const startLocks = new Map<string, Promise<void>>();
 const START_CONFIG_PATH_PARTS = [".agents", "agent_config.json"] as const;
-const START_INPUT_KEYS = new Set(["name", "pane", "config_agent", "kind", "args"]);
+const START_INPUT_KEYS = new Set(["name", "with", "cwd", "config_agent", "kind", "args"]);
 
 /** @internal Test seam only: clears process-local configured-start state. */
 export function resetStartStateForTests(): void {
@@ -140,8 +146,8 @@ function startConfigError(
 }
 
 function validateStartInput(input: unknown):
-  | { mode: "configured"; name: string; pane: string; configAgent: string }
-  | { mode: "explicit"; name: string; pane: string; variant: ValidatedStartVariant } {
+  | { mode: "configured"; name: string; configAgent: string; withName?: string; cwd?: string }
+  | { mode: "explicit"; name: string; variant: ValidatedStartVariant; withName?: string; cwd?: string } {
   const value = asRecord(input);
   if (!value) throw startInputError("start input must be an object");
   for (const key of Object.keys(value)) {
@@ -150,11 +156,25 @@ function validateStartInput(input: unknown):
 
   const name = value.name;
   if (typeof name !== "string" || !isValidAgentName(name)) {
-    throw startInputError("\"name\" must be a valid Herdr Agent Name");
+    throw startInputError('"name" must be a valid Herdr Agent Name');
   }
-  const pane = value.pane;
-  if (typeof pane !== "string" || pane.trim() === "") {
-    throw startInputError("\"pane\" must be a non-empty pane id");
+
+  let withName: string | undefined;
+  if (hasOwn(value, "with")) {
+    const withValue = value.with;
+    if (typeof withValue !== "string" || !isValidAgentName(withValue)) {
+      throw startInputError('"with" must be a valid Herdr Agent Name');
+    }
+    withName = withValue;
+  }
+
+  let cwd: string | undefined;
+  if (hasOwn(value, "cwd")) {
+    const cwdValue = value.cwd;
+    if (typeof cwdValue !== "string" || cwdValue.trim() === "") {
+      throw startInputError('"cwd" must be a non-empty string');
+    }
+    cwd = cwdValue;
   }
 
   const hasConfigAgent = hasOwn(value, "config_agent");
@@ -166,9 +186,9 @@ function validateStartInput(input: unknown):
   if (hasConfigAgent) {
     const configAgent = value.config_agent;
     if (typeof configAgent !== "string" || configAgent.trim() === "") {
-      throw startInputError("\"config_agent\" must be a non-empty string");
+      throw startInputError('"config_agent" must be a non-empty string');
     }
-    return { mode: "configured", name, pane, configAgent };
+    return { mode: "configured", name, configAgent, ...(withName !== undefined ? { withName } : {}), ...(cwd !== undefined ? { cwd } : {}) };
   }
 
   if (!hasKind || !hasArgs) {
@@ -176,13 +196,17 @@ function validateStartInput(input: unknown):
   }
   const kind = value.kind;
   if (typeof kind !== "string" || kind.trim() === "") {
-    throw startInputError("\"kind\" must be a non-empty string");
+    throw startInputError('"kind" must be a non-empty string');
   }
   const args = value.args;
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
-    throw startInputError("\"args\" must be an array of strings");
+    throw startInputError('"args" must be an array of strings');
   }
-  return { mode: "explicit", name, pane, variant: { kind, args: [...args] } };
+  // Explicit `with` (same-tab placement) never takes a launch `cwd`.
+  if (withName !== undefined && cwd !== undefined) {
+    throw startInputError('"cwd" cannot be combined with "with"');
+  }
+  return { mode: "explicit", name, variant: { kind, args: [...args] }, ...(withName !== undefined ? { withName } : {}), ...(cwd !== undefined ? { cwd } : {}) };
 }
 
 function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -195,8 +219,7 @@ function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly str
 function validateConfiguredDocument(document: unknown): Map<string, ConfiguredStartAgent> {
   const root = asRecord(document);
   if (!root) throw startConfigError("START_CONFIG_INVALID", "configuration root must be an object");
-  assertAllowedKeys(root, ["version", "agents"], "configuration root");
-  if (root.version !== 1) throw startConfigError("START_CONFIG_INVALID", "configuration version must be 1");
+  assertAllowedKeys(root, ["agents"], "configuration root");
 
   const agents = asRecord(root.agents);
   if (!agents) throw startConfigError("START_CONFIG_INVALID", "agents must be an object");
@@ -208,7 +231,11 @@ function validateConfiguredDocument(document: unknown): Map<string, ConfiguredSt
     }
     const entry = asRecord(rawEntry);
     if (!entry) throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent} must be an object`);
-    assertAllowedKeys(entry, ["strategy", "variants"], `agents.${configAgent}`);
+    assertAllowedKeys(entry, ["placement", "strategy", "variants"], `agents.${configAgent}`);
+    if (!hasOwn(entry, "placement")) {
+      throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement is required`);
+    }
+    const placement = validatePlacement(entry.placement, configAgent);
 
     const rawVariants = entry.variants;
     if (!Array.isArray(rawVariants) || rawVariants.length === 0) {
@@ -238,11 +265,36 @@ function validateConfiguredDocument(document: unknown): Map<string, ConfiguredSt
     });
 
     result.set(configAgent, {
+      placement,
       ...(hasStrategy ? { strategy: "round-robin" as const } : {}),
       variants,
     });
   }
   return result;
+}
+
+/** Strict placement validation: `new_tab` with optional presentation-only label, or `with` without a label. */
+function validatePlacement(rawPlacement: unknown, configAgent: string): ValidatedPlacement {
+  const placement = asRecord(rawPlacement);
+  if (!placement) {
+    throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement must be an object`);
+  }
+  if (placement.mode === "new_tab") {
+    assertAllowedKeys(placement, ["mode", "label"], `agents.${configAgent}.placement`);
+    let label: string | undefined;
+    if (hasOwn(placement, "label")) {
+      if (typeof placement.label !== "string" || placement.label.trim() === "") {
+        throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement.label must be a non-empty string`);
+      }
+      label = placement.label;
+    }
+    return { mode: "new_tab", ...(label !== undefined ? { label } : {}) };
+  }
+  if (placement.mode === "with") {
+    assertAllowedKeys(placement, ["mode"], `agents.${configAgent}.placement`);
+    return { mode: "with" };
+  }
+  throw startConfigError("START_CONFIG_INVALID", `agents.${configAgent}.placement.mode is unsupported`);
 }
 
 async function loadConfiguredStartAgents(configPath: string): Promise<Map<string, ConfiguredStartAgent>> {
@@ -295,22 +347,185 @@ async function runStart(name: string, pane: string, variant: ValidatedStartVaria
 }
 
 export interface StartAgentOptions {
-  /** Runtime context directory used to locate the optional project config. */
-  cwd?: string;
+  /**
+   * Adapter context directory: locates `.agents/agent_config.json`, is the
+   * default launch cwd for a new tab, and is the resolution base for a
+   * relative model `cwd`. Never used as the launch cwd of a `with` placement.
+   */
+  contextDirectory?: string;
 }
 
-/** Starts an Agent from a complete configured entry or a complete explicit launch specification. */
+type ResolvedPlacement =
+  | { kind: "new-tab"; label?: string }
+  | { kind: "with"; withName: string };
+
+type PlacementAllocation = {
+  paneId: string;
+  rollback(): Promise<void>;
+};
+
+function startFailure(detail: string): HerdrLinkError {
+  return new HerdrLinkError("START_FAILED", detail);
+}
+
+/**
+ * Resolves the effective placement for a validated start. Configured mode
+ * derives it from the declared placement; explicit mode derives it from the
+ * presence of `with` (present → same-tab, absent → new-tab).
+ */
+function resolvePlacement(
+  validated: ReturnType<typeof validateStartInput>,
+  configPlacement: ValidatedPlacement | undefined,
+): ResolvedPlacement {
+  if (validated.mode === "configured") {
+    if (configPlacement?.mode === "new_tab") {
+      if (validated.withName !== undefined) {
+        throw startInputError('"with" is not allowed for a new_tab configured placement');
+      }
+      return { kind: "new-tab", label: configPlacement.label };
+    }
+    // configured `with`:
+    if (validated.withName === undefined) {
+      throw startInputError('configured "with" placement requires "with"');
+    }
+    if (validated.cwd !== undefined) {
+      throw startInputError('"cwd" is not allowed for a "with" placement');
+    }
+    return { kind: "with", withName: validated.withName };
+  }
+  return validated.withName !== undefined
+    ? { kind: "with", withName: validated.withName }
+    : { kind: "new-tab" };
+}
+
+/**
+ * New-tab launch cwd: `input.cwd` resolved against the context directory
+ * when relative, used as-is when absolute; otherwise the context directory
+ * itself. NEVER affects where `.agents/agent_config.json` is looked up.
+ */
+function resolveLaunchCwd(contextDirectory: string, inputCwd: string | undefined): string {
+  if (inputCwd === undefined) return contextDirectory;
+  return isAbsolute(inputCwd) ? inputCwd : resolve(contextDirectory, inputCwd);
+}
+
+/** Best-effort tab close; rollback failures never replace the primary error. */
+async function bestEffortCloseTab(tabId: string): Promise<void> {
+  try {
+    await runFor(["tab", "close", tabId], "START_FAILED");
+  } catch {
+    // Preserve the primary start failure classification.
+  }
+}
+
+/** Best-effort pane close; rollback failures never replace the primary error. */
+async function bestEffortClosePane(paneId: string): Promise<void> {
+  try {
+    await runFor(["pane", "close", paneId], "START_FAILED");
+  } catch {
+    // Preserve the primary start failure classification.
+  }
+}
+
+
+/**
+ * New-tab allocation: create a focus-free tab, then resolve its exactly-one
+ * root pane through a fresh `pane list` filtered by the created tab id.
+ * Raw topology ids stay inside this function and the returned allocation.
+ */
+async function allocateNewTab(
+  contextDirectory: string,
+  inputCwd: string | undefined,
+  label: string | undefined,
+): Promise<PlacementAllocation> {
+  const self = await getSelfContext();
+  const launchCwd = resolveLaunchCwd(contextDirectory, inputCwd);
+  const created = await runFor(
+    [
+      "tab", "create",
+      "--workspace", self.workspace_id,
+      "--cwd", launchCwd,
+      ...(label !== undefined ? ["--label", label] : []),
+      "--no-focus",
+    ],
+    "START_FAILED",
+  );
+  const createdTabId = parseTabCreateResult(created);
+  if (createdTabId === undefined) throw startFailure("created tab reported no tab id");
+  try {
+    const panes = await runFor(["pane", "list", "--workspace", self.workspace_id], "START_FAILED");
+    const rootPanes = filterPanesByTab(panes, createdTabId);
+    if (rootPanes.length !== 1 || rootPanes[0] === undefined) {
+      throw startFailure("created tab must contain exactly one root pane");
+    }
+    return {
+      paneId: rootPanes[0],
+      rollback: () => bestEffortCloseTab(createdTabId),
+    };
+  } catch (error) {
+    // The tab was allocated but not yet exposed: close the exact created tab.
+    await bestEffortCloseTab(createdTabId);
+    throw error;
+  }
+}
+
+/**
+ * `with` allocation: resolve the live anchor, enforce same-workspace, read
+ * the anchor pane's cwd, and split that pane so the new Agent inherits the
+ * anchor's live cwd. Raw pane ids stay inside this function.
+ */
+async function allocateWith(withName: string): Promise<PlacementAllocation> {
+  const self = await getSelfContext();
+  const anchor = await getAgentContext(withName);
+  assertSameWorkspace(self, anchor);
+  const anchorPane = await getPaneCwd(anchor.pane_id);
+  if (anchorPane.workspace_id === "" || anchorPane.workspace_id !== self.workspace_id) {
+    throw new HerdrLinkError("PEER_NOT_FOUND", AGENT_ERROR_DETAILS.PEER_NOT_FOUND);
+  }
+  if (anchorPane.cwd === undefined || anchorPane.cwd === "") {
+    throw startFailure(`anchor pane ${anchor.pane_id} has no cwd; cannot inherit worktree binding`);
+  }
+  const split = await runFor(
+    [
+      "pane", "split", anchor.pane_id,
+      "--direction", "right",
+      "--cwd", anchorPane.cwd,
+      "--no-focus",
+    ],
+    "START_FAILED",
+  );
+  const newPaneId = parsePaneSplitResult(split);
+  if (newPaneId === undefined) throw startFailure("pane split returned no created pane id");
+  return {
+    paneId: newPaneId,
+    rollback: () => bestEffortClosePane(newPaneId),
+  };
+}
+
+/** Starts an Agent with Link-managed placement: allocation, mech start, failed-start rollback. */
 export async function startAgent(input: StartAgentInput, options: StartAgentOptions = {}): Promise<StartAgentReceipt> {
   assertHerdrEnvironment();
   const validated = validateStartInput(input);
+  const contextDirectory =
+    typeof options.contextDirectory === "string" && options.contextDirectory.trim() !== ""
+      ? options.contextDirectory
+      : process.cwd();
 
   if (validated.mode === "explicit") {
-    await runStart(validated.name, validated.pane, validated.variant);
+    const placement = resolvePlacement(validated, undefined);
+    const allocation =
+      placement.kind === "new-tab"
+        ? await allocateNewTab(contextDirectory, validated.cwd, placement.label)
+        : await allocateWith(placement.withName);
+    try {
+      await runStart(validated.name, allocation.paneId, validated.variant);
+    } catch (error) {
+      await allocation.rollback().catch(() => {});
+      throw error;
+    }
     return { status: "started", agent: validated.name, kind: validated.variant.kind };
   }
 
-  const projectRoot = typeof options.cwd === "string" && options.cwd.trim() !== "" ? options.cwd : process.cwd();
-  const configPath = resolve(projectRoot, ...START_CONFIG_PATH_PARTS);
+  const configPath = resolve(contextDirectory, ...START_CONFIG_PATH_PARTS);
   const cursorKey = `${configPath}\u0000${validated.configAgent}`;
   return withStartCursorLock(cursorKey, async () => {
     const configuredAgents = await loadConfiguredStartAgents(configPath);
@@ -319,14 +534,24 @@ export async function startAgent(input: StartAgentInput, options: StartAgentOpti
       throw startConfigError("START_AGENT_NOT_FOUND", `configured Agent "${validated.configAgent}" was not found`);
     }
 
+    const placement = resolvePlacement(validated, configured.placement);
     const current = startCursors.get(cursorKey) ?? 0;
     const variantIndex = current % configured.variants.length;
     const variant = configured.variants[variantIndex]!;
-    await runStart(validated.name, validated.pane, variant);
-    if (configured.variants.length > 1) {
-      startCursors.set(cursorKey, (variantIndex + 1) % configured.variants.length);
+    const allocation =
+      placement.kind === "new-tab"
+        ? await allocateNewTab(contextDirectory, validated.cwd, placement.label)
+        : await allocateWith(placement.withName);
+    try {
+      await runStart(validated.name, allocation.paneId, variant);
+      if (configured.variants.length > 1) {
+        startCursors.set(cursorKey, (variantIndex + 1) % configured.variants.length);
+      }
+      return { status: "started", agent: validated.name, kind: variant.kind };
+    } catch (error) {
+      await allocation.rollback().catch(() => {});
+      throw error;
     }
-    return { status: "started", agent: validated.name, kind: variant.kind };
   });
 }
 
@@ -410,7 +635,75 @@ function agentList(value: unknown): unknown[] {
 }
 
 /* ------------------------------------------------------------------ *
- * Live record readers (blueprint v2)
+ * Topology parsing helpers (pure, unit-testable)
+ *
+ * Hersdr topology responses are parsed here, never guessed inline in the
+ * allocation flow. Shapes follow the measured Herdr CLI responses:
+ * - tab create -> { result: { tab: { tab_id }, root_pane: { ... } } }
+ * - pane list  -> { result: { panes: [{ tab_id, pane_id, ... }] } }
+ * - pane get   -> { result: { pane: { workspace_id, cwd, ... } } }
+ * - pane split -> { result: { pane: { pane_id, ... } } }
+ * ------------------------------------------------------------------ */
+
+interface PaneInfoRecord {
+  workspace_id?: string;
+  cwd?: string;
+  tab_id?: string;
+}
+
+/** Parses the created tab id from `tab create` output; undefined when absent. */
+function parseTabCreateResult(value: unknown): string | undefined {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const tab = asRecord(result?.tab) ?? asRecord(root?.tab) ?? asRecord(result);
+  return nonEmptyString(tab?.tab_id);
+}
+
+/** Returns pane ids of the created tab from a fresh `pane list` response. */
+function filterPanesByTab(value: unknown, tabId: string): string[] {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const rawPanes = result?.panes;
+  if (!Array.isArray(rawPanes)) return [];
+  const paneIds: string[] = [];
+  for (const raw of rawPanes) {
+    const pane = asRecord(raw);
+    if (pane && pane.tab_id === tabId) {
+      const paneId = nonEmptyString(pane.pane_id);
+      if (paneId !== undefined) paneIds.push(paneId);
+    }
+  }
+  return paneIds;
+}
+
+/** Parses a pane record from `pane get` output. */
+function parsePaneInfoResult(value: unknown): PaneInfoRecord {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const pane = asRecord(result?.pane) ?? asRecord(root);
+  return {
+    workspace_id: nonEmptyString(pane?.workspace_id),
+    cwd: nonEmptyString(pane?.cwd),
+    tab_id: nonEmptyString(pane?.tab_id),
+  };
+}
+
+/** Fresh `pane get` for an anchor pane: authoritative cwd/workspace facts. */
+async function getPaneCwd(paneId: string): Promise<PaneInfoRecord> {
+  const response = await runFor(["pane", "get", paneId], "START_FAILED");
+  return parsePaneInfoResult(response);
+}
+
+/** Parses the created sibling pane id from `pane split` output; undefined when absent. */
+function parsePaneSplitResult(value: unknown): string | undefined {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const pane = asRecord(result?.pane) ?? asRecord(result);
+  return nonEmptyString(pane?.pane_id);
+}
+
+/* ------------------------------------------------------------------ *
+ * Live record readers
  *
  * Every communication call resolves fresh records from Herdr. Ambient
  * environment values such as HERDR_WORKSPACE_ID are never consulted:

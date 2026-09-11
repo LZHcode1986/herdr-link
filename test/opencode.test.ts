@@ -49,7 +49,7 @@ function toolContext(sessionID: string, directory?: string): Parameters<GatewayT
   return { sessionID, ...(directory === undefined ? {} : { directory }) } as Parameters<GatewayTool["execute"]>[1];
 }
 
-/** Live-record fixture matching the v2 core reader: name/workspace/pane/status. */
+/** Live-record fixture matching the core reader: name/workspace/pane/status. */
 function liveAgent(name: string, workspaceId = "ws-1"): unknown {
   return { result: { name, workspace_id: workspaceId, pane_id: `pane-${name}`, agent_status: "working" } };
 }
@@ -118,7 +118,7 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
         safeParse(input: unknown): { success: boolean };
       }).safeParse(value).success;
 
-    assert.deepEqual(Object.keys(gateway.args), ["action", "to", "message", "agent", "name", "pane", "config_agent", "kind", "args"]);
+    assert.deepEqual(Object.keys(gateway.args), ["action", "to", "message", "agent", "name", "with", "cwd", "config_agent", "kind", "args"]);
     assert.equal(fieldAccepts("action", undefined), true);
     assert.equal(fieldAccepts("action", "peers"), true);
     assert.equal(fieldAccepts("action", "send"), true);
@@ -146,7 +146,7 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     await transform({ sessionID: "session-1", model: {} as never }, output as never);
     await transform({ sessionID: "session-1", model: {} as never }, output as never);
     assert.equal(output.system.length, 2);
-    assert.match(output.system[1] ?? "", /herdr-link\/1/);
+    assert.match(output.system[1] ?? "", /agent channel/);
   });
 
   await t.test("activation is isolated per sessionID and ephemeral per plugin instance", async () => {
@@ -195,9 +195,9 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.equal(active.system.length, 2);
     assert.ok((active.system[1] ?? "").startsWith(COMMUNICATION_CONTRACT));
     assert.match(active.system[1] ?? "", /single herdr_link gateway/);
-    assert.match(active.system[1] ?? "", /exactly "done"/);
-    assert.match(active.system[1] ?? "", /failure or blocker/);
-    assert.match(active.system[1] ?? "", /explicitly requested no reply/);
+    assert.match(active.system[1] ?? "", /"done" only when no specific result was requested/);
+    assert.match(active.system[1] ?? "", /no reply when explicitly requested/);
+    assert.match(active.system[1] ?? "", /peer state never proves completion/);
     assert.match(active.system[1] ?? "", /later tool step/);
 
     // Repeated transforms stay idempotent.
@@ -239,10 +239,32 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.equal(result.self.name, "self");
     assert.deepEqual(result.peers.map((peer) => peer.name), ["alpha", "beta"]);
   });
-  await t.test('dispatcher action="start" forwards explicit launch parameters', async () => {
+  await t.test('dispatcher action="start" forwards explicit launch parameters with Link-managed new-tab placement', async () => {
     const { gateway } = await gatewayInHerdrEnvironment();
     const startCalls: string[][] = [];
     const runner: HerdrRunner = async (_file, args) => {
+      if (args[0] === "agent" && args[1] === "get") {
+        return { stdout: JSON.stringify(liveAgent(String(args[2]))), stderr: "" };
+      }
+      if (args[0] === "tab" && args[1] === "create") {
+        return {
+          stdout: JSON.stringify({
+            result: {
+              root_pane: { pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: String(args[5]) },
+              tab: { tab_id: "wS:t1", workspace_id: "ws-1" },
+            },
+          }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "pane" && args[1] === "list") {
+        return {
+          stdout: JSON.stringify({
+            result: { panes: [{ pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: "/launch" }] },
+          }),
+          stderr: "",
+        };
+      }
       if (args[0] === "agent" && args[1] === "start") {
         startCalls.push([...args]);
         return { stdout: JSON.stringify({ result: { accepted: true } }), stderr: "" };
@@ -254,12 +276,12 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
 
     const result = await executeGateway(
       gateway,
-      { action: "start", name: "worker-01", pane: "wS:p22", kind: "pi", args: ["--model", "model-x"] },
+      { action: "start", name: "worker-01", kind: "pi", args: ["--model", "model-x"] },
       "session-start",
     );
     assert.deepEqual(result, { status: "started", agent: "worker-01", kind: "pi" });
     assert.deepEqual(startCalls, [
-      ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p22", "--", "--model", "model-x"],
+      ["agent", "start", "worker-01", "--kind", "pi", "--pane", "wS:p1", "--", "--model", "model-x"],
     ]);
   });
 
@@ -271,9 +293,9 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
       writeFileSync(
         join(projectRoot, ".agents", "agent_config.json"),
         JSON.stringify({
-          version: 1,
           agents: {
             "work-agent": {
+              placement: { mode: "new_tab" },
               variants: [{ kind: "agy", args: ["--model", "configured/model"] }],
             },
           },
@@ -282,6 +304,28 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
       const { gateway } = await gatewayInHerdrEnvironment();
       const startCalls: string[][] = [];
       const runner: HerdrRunner = async (_file, args) => {
+        if (args[0] === "agent" && args[1] === "get") {
+          return { stdout: JSON.stringify(liveAgent(String(args[2]))), stderr: "" };
+        }
+        if (args[0] === "tab" && args[1] === "create") {
+          return {
+            stdout: JSON.stringify({
+              result: {
+                root_pane: { pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: String(args[5]) },
+                tab: { tab_id: "wS:t1", workspace_id: "ws-1" },
+              },
+            }),
+            stderr: "",
+          };
+        }
+        if (args[0] === "pane" && args[1] === "list") {
+          return {
+            stdout: JSON.stringify({
+              result: { panes: [{ pane_id: "wS:p1", tab_id: "wS:t1", workspace_id: "ws-1", cwd: projectRoot }] },
+            }),
+            stderr: "",
+          };
+        }
         if (args[0] === "agent" && args[1] === "start") {
           startCalls.push([...args]);
           return { stdout: JSON.stringify({ result: { accepted: true } }), stderr: "" };
@@ -292,13 +336,13 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
       try {
         const result = await executeGateway(
           gateway,
-          { action: "start", name: "worker-config", pane: "wS:p24", config_agent: "work-agent" },
+          { action: "start", name: "worker-config", config_agent: "work-agent" },
           "session-config-start",
           projectRoot,
         );
         assert.deepEqual(result, { status: "started", agent: "worker-config", kind: "agy" });
         assert.deepEqual(startCalls, [
-          ["agent", "start", "worker-config", "--kind", "agy", "--pane", "wS:p24", "--", "--model", "configured/model"],
+          ["agent", "start", "worker-config", "--kind", "agy", "--pane", "wS:p1", "--", "--model", "configured/model"],
         ]);
       } finally {
         setHerdrRunnerForTests(undefined);

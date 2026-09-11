@@ -1,5 +1,5 @@
 /**
- * Herdr Link OpenCode Runtime adapter v2 — single-gateway presentation.
+ * Herdr Link OpenCode Runtime adapter — single-gateway presentation.
  *
  * The model-facing surface is exactly one tiny `herdr_link` dispatcher tool,
  * in both dormant and active states. Calling it with no arguments (`{}`)
@@ -95,7 +95,7 @@ export const herdrLinkPlugin: Plugin = async () => {
         description:
           "Herdr Link cross-agent control gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. " +
           'Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. ' +
-            'Then pass action "start" with name + pane and either config_agent or complete kind + args, action "peers" to list live same-workspace agents, action "send" with to + message to deliver an inter-agent message or ordinary reply, or action "close" with agent to close a named agent\'s pane — ' +
+            'Then pass action "start" with name and either config_agent or complete kind + args (with to co-locate with a live agent, cwd for a new-tab working directory), action "peers" to list live same-workspace agents, action "send" with to + message to deliver an inter-agent message or ordinary reply, or action "close" with agent to close a named agent\'s pane — ' +
             'start modes are mutually exclusive and close is only after any final send has returned status "sent", in a later tool step.',
         args: {
           action: tool.schema
@@ -120,10 +120,14 @@ export const herdrLinkPlugin: Plugin = async () => {
             .string()
             .optional()
             .describe('New Agent Name; required for action "start".'),
-          pane: tool.schema
+          with: tool.schema
             .string()
             .optional()
-            .describe('Existing pane id; required for action "start".'),
+            .describe('Live Agent Name to co-locate with for action "start"; do not combine with cwd.'),
+          cwd: tool.schema
+            .string()
+            .optional()
+            .describe('New-tab working directory for action "start".'),
           config_agent: tool.schema
             .string()
             .optional()
@@ -149,7 +153,7 @@ export const herdrLinkPlugin: Plugin = async () => {
           if (args.action === "start") {
             const startInput = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "action"));
             try {
-              return jsonResult(await startAgent(startInput as unknown as StartAgentInput, { cwd: context.directory }));
+              return jsonResult(await startAgent(startInput as unknown as StartAgentInput, { contextDirectory: context.directory }));
             } catch (error) {
               failWith(error, "START_FAILED");
             }

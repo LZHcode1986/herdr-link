@@ -1,5 +1,5 @@
 /**
- * Herdr Link Pi Runtime adapter v2 — Tier 0/Tier 1 presentation.
+ * Herdr Link Pi Runtime adapter — Tier 0/Tier 1 presentation.
  *
  * Tier 0 (dormant): with the three Herdr environment variables present, the
  * adapter registers everything but keeps the model-facing surface down to the
@@ -23,8 +23,10 @@
  * - Lazily loaded tools should omit active-only prompt metadata
  *   (`promptSnippet`/`promptGuidelines`) and rely on their `description`;
  *   activating such metadata would rebuild the system prompt mid-session.
+ * - The active-session `tool_call` guard hard-blocks raw blocking Agent wait
+ *   command forms before execution; dormant sessions leave Herdr CLI as-is.
  */
-import type { ExtensionAPI, ToolExecutionMode } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType, type ExtensionAPI, type ToolExecutionMode } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { closeAgentPane, ensureSelfName, listPeers, sendMessage, startAgent } from "./herdr.ts";
@@ -43,7 +45,8 @@ const TIER1_TOOL_SET = new Set<string>(TIER1_TOOL_NAMES);
 const GATEWAY_PARAMETERS = Type.Object({});
 const START_PARAMETERS = Type.Object({
   name: Type.String(),
-  pane: Type.String(),
+  with: Type.Optional(Type.String()),
+  cwd: Type.Optional(Type.String()),
   config_agent: Type.Optional(Type.String()),
   kind: Type.Optional(Type.String()),
   args: Type.Optional(Type.Array(Type.String())),
@@ -101,7 +104,7 @@ export default function (pi: ExtensionAPI): void {
     parameters: START_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        return toolResult(await startAgent(params as StartAgentInput, { cwd: ctx.cwd }));
+        return toolResult(await startAgent(params as StartAgentInput, { contextDirectory: ctx.cwd }));
       } catch (error) {
         rethrowToolError(error, "START_FAILED");
       }
@@ -112,7 +115,7 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link_peers",
     label: "Herdr Link Peers",
     description:
-      "Discover named agents available through the cross-agent communication channel. Returns { self, peers }; addresses are Agent Names.",
+      "List live same-workspace agent names.",
     parameters: PEERS_PARAMETERS,
     async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
       try {
@@ -127,7 +130,7 @@ export default function (pi: ExtensionAPI): void {
     name: "herdr_link_send",
     label: "Herdr Link Send",
     description:
-      'Send an inter-agent message (protocol herdr-link/1) to another agent through the cross-agent communication channel. status "sent" means Herdr accepted delivery, not that the peer finished its task.',
+      'Send a Link message; "sent" is delivery only.',
     parameters: SEND_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       try {
@@ -147,7 +150,7 @@ export default function (pi: ExtensionAPI): void {
     // 使含 close 的批次整体串行。peers/send 保持默认并行。
     executionMode: "sequential" as ToolExecutionMode,
     description:
-      'Close the Herdr pane currently hosting a named agent. Sequential: if a final message is needed, send it first and call close in a later tool step after herdr_link_send returns status "sent".',
+      'Close a named agent\'s pane. Sequential: if a final message is needed, send it first and call close in a later tool step after herdr_link_send returns status "sent".',
     parameters: CLOSE_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       try {
@@ -200,5 +203,29 @@ export default function (pi: ExtensionAPI): void {
   pi.on("before_agent_start", (event) => {
     if (!activated) return undefined;
     return { systemPrompt: `${event.systemPrompt}\n\n${COMMUNICATION_CONTRACT}` };
+  });
+
+  // --- Active-session blocking-wait guard (PROTOCOL.md §4.2 safety note).
+  // Only active Link sessions hard-block raw blocking Agent wait forms at
+  // the Bash tool boundary BEFORE execution. Dormant sessions (Link inactive)
+  // leave ordinary Herdr CLI usage untouched. Link's own sendMessage() runs
+  // through process execution, never through this model tool hook.
+  pi.on("tool_call", (event) => {
+    if (!activated) return undefined;
+    if (!isToolCallEventType("bash", event)) return undefined;
+    const command = event.input.command;
+    if (/\bherdr\s+agent\s+wait\b/.test(command)) {
+      return {
+        block: true,
+        reason: "Wait disabled by Herdr Link. End this turn; resume on the inbound Link message.",
+        terminate: true,
+      };
+    }
+    // Match the prompt command as a plain substring and `--wait` as a
+    // standalone token. Avoid `\b` escapes: they are unreliable here.
+    if (/herdr\s+agent\s+prompt/.test(command) && /(^|\s)--wait(\s|$)/.test(command)) {
+      return { block: true, reason: "Use herdr_link_send for agent messages." };
+    }
+    return undefined;
   });
 }

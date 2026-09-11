@@ -2,8 +2,28 @@
 
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [Unreleased]
+
+## [0.5.0] - 2026-09-11
+
+### Added
+
+- **Link-managed placement** for `herdr_link_start`: the start tool no longer accepts a raw pane id. `new_tab` placement creates a focus-free tab and resolves its exactly-one root pane; `with=<live Agent Name>` placement splits the anchor pane and inherits its live cwd.
+- `with` and `cwd` input fields on the start tool: `with` co-locates with a live agent (same-tab), `cwd` sets the launch working directory of a new tab only.
+- Failed-start allocation rollback: a tab/sibling pane created by a start that later fails is closed best-effort (exact created tab/pane), preserving the primary error and never retrying.
+- Pi active-session blocking-wait guard: raw `herdr agent wait` and `herdr agent prompt ... --wait` are blocked before execution while the Link channel is active (`herdr agent wait` also terminates the turn; prompt-with-wait is blocked without terminating so the model can switch to `herdr_link_send`).
+
+### Changed
+
+- `herdr_link_start` model schema: removed the raw `pane` field; added optional `with` / `cwd`. Receipts stay `{ status, agent, kind }` with no topology ids.
+- `.agents/agent_config.json`: root schema-generation fields removed (`agents` only); every configured entry now requires an explicit `placement` (`new_tab` with optional presentation-only label, or `with` without label).
+- Config finder semantics split: the adapter context directory locates the config file; a model-supplied `cwd` only affects new-tab launch and never changes where `.agents/agent_config.json` is looked up.
+- Communication Contract, tool descriptions, and docs pruned to current behavior; historical release notes stay in the changelog.
+
+### Fixed
+
+- Adapter start semantics are now consistent across Pi / OpenCode / MCP with the same canonical input, placement, receipt, and rollback behavior.
+
 
 ## [0.4.1] - 2026-09-07
 
