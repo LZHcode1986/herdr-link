@@ -145,12 +145,11 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "herdr_link_close",
     label: "Herdr Link Close",
-    // Pi 默认并行执行同一 assistant response 的 sibling tool calls；close 与 send 同批时
-    // 必须保证 send 先完成（"sent" 语义=Herdr 已接受投递），故 close 声明为 sequential，
-    // 使含 close 的批次整体串行。peers/send 保持默认并行。
+    // Pi 可能并行执行 sibling tool calls；close 声明为 sequential 仅用于避免含 close
+    // 的批次发生竞态，这是 execution safety，不是 lifecycle/send policy。
     executionMode: "sequential" as ToolExecutionMode,
     description:
-      'Close a named agent\'s pane. Sequential: if a final message is needed, send it first and call close in a later tool step after herdr_link_send returns status "sent".',
+      "Close the explicitly named agent's pane. The caller owns the lifecycle decision; Herdr Link only performs the close. Invoke close as a standalone later tool step after any earlier Herdr Link operation has completed. Closing sends no message.",
     parameters: CLOSE_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       try {

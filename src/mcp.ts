@@ -39,7 +39,7 @@ import {
 
 export const MCP_SERVER_NAME = "herdr-link";
 /** Keep in sync with package.json "version" (serverInfo is informational). */
-export const MCP_SERVER_VERSION = "0.5.0";
+export const MCP_SERVER_VERSION = "0.5.1";
 /** Fallback protocol version advertised when the client sends none. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
@@ -81,7 +81,7 @@ const TOOL_DESCRIPTIONS: Record<CanonicalToolName, string> = {
   [TOOL_START]: `${START_TOOL_DESCRIPTION} ${NORMAL_MESSAGING_RULE}`,
   [TOOL_PEERS]: `List live same-workspace agent names. ${NORMAL_MESSAGING_RULE}`,
   [TOOL_SEND]: `Send a Link message; "sent" is delivery only. ${NORMAL_MESSAGING_RULE}`,
-  [TOOL_CLOSE]: `Close a named agent's pane. If a final message is needed, send first and close in a later tool step. ${NORMAL_MESSAGING_RULE}`,
+  [TOOL_CLOSE]: `Close the explicitly named agent's pane. The caller owns the lifecycle decision; Herdr Link only performs the close. Invoke close as a standalone later tool step after any earlier Herdr Link operation has completed. Closing sends no message. ${NORMAL_MESSAGING_RULE}`,
 };
 
 const TOOL_INPUT_SCHEMAS: Record<CanonicalToolName, Record<string, unknown>> = {

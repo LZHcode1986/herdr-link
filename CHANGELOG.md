@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-03
+
+### Changed
+
+- Agent-facing close guidance no longer instructs a message before closing: `herdr_link_close` performs only the close, the caller owns the lifecycle decision, and closing sends no message. `PROTOCOL.md` §4.5, the Pi/OpenCode/MCP close descriptions, and the README sequence diagram were updated; the canonical Communication Contract is unchanged.
+
 ## [0.5.0] - 2026-09-11
 
 ### Added

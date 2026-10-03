@@ -46,7 +46,7 @@ const GATEWAY_PRESENTATION_APPENDIX = `In this runtime the active Herdr Link cap
 - Use herdr_link with action "start": ${START_TOOL_DESCRIPTION}
 - Use herdr_link with action "peers" to list live same-workspace agents.
 - Use herdr_link with action "send" with to and message to deliver an inter-agent message or ordinary reply.
-- Use herdr_link with action "close" and an Agent Name only after any final send returns status "sent", in a later tool step.`;
+- Use herdr_link with action "close" and an Agent Name to close the explicitly named pane. The caller owns the lifecycle decision; Herdr Link only performs the close. Invoke it as a standalone later tool step after any earlier Herdr Link operation has completed. Closing sends no message.`;
 
 const GATEWAY_CONTRACT = `${COMMUNICATION_CONTRACT}\n\n${GATEWAY_PRESENTATION_APPENDIX}`;
 
@@ -96,7 +96,7 @@ export const herdrLinkPlugin: Plugin = async () => {
           "Herdr Link cross-agent control gateway (herdr-link/1). Activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message. " +
           'Call once with no arguments {} to activate Herdr Link for this session; the response lists capabilities. ' +
             'Then pass action "start" with name and either config_agent or complete kind + args (with to co-locate with a live agent, cwd for a new-tab working directory), action "peers" to list live same-workspace agents, action "send" with to + message to deliver an inter-agent message or ordinary reply, or action "close" with agent to close a named agent\'s pane — ' +
-            'start modes are mutually exclusive and close is only after any final send has returned status "sent", in a later tool step.',
+            'start modes are mutually exclusive and close is a standalone later tool step that performs the close only; the caller owns the lifecycle decision and closing sends no message.',
         args: {
           action: tool.schema
             .enum(["start", "peers", "send", "close"])

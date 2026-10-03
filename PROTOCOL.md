@@ -151,7 +151,7 @@ Herdr Link is the agent channel for the current Herdr workspace.
 - 输入：`{ "agent": string }` —— 只接受 Agent Name，不接受 raw pane ID。
 - 正常输出：`{ "status": "closed", "agent": string }`
 - 规范：
-  1. 如果调用方需要发送最终消息，必须先等待 `herdr_link_send` 返回 `status=sent`，再在后续工具步骤调用 `herdr_link_close`；
+  1. 是否 close 由调用方（lifecycle owner）自行判断；Herdr Link 只机械执行调用方明确提交的 close，不判断 lifecycle，也不判断是否还有消息要发，close 本身不发送消息；close 应作为独立的后续工具步骤调用，若调用方之前已决定执行其它 Herdr Link 操作，先等该操作完成再调用；
   2. 每次 close 都实时重新解析 self 与 target 的 live 记录并通过 same-workspace guard（§5），然后取 target 当前的 authoritative `pane_id`，再调用 `pane close <pane_id>`；不缓存 pane ID；
   3. 不依赖目标 `state`；不允许默认关闭 focused pane；不允许 `--current` / UI focus fallback；
   4. 不要求先 `release-agent`；资源关闭原语就是 Herdr `pane.close`；
@@ -195,7 +195,7 @@ Herdr Link is the agent channel for the current Herdr workspace.
 “同一 Runtime Adapter”指一个可独立安装和验证的 Runtime-specific 交付单元；它可以由多个宿主接线点组成（例如 MCP tools + Runtime hook），但不得把外部 Agent 指令文件或操作者维护的 Contract 副本当作第五项依赖。
 
 Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool system 实现；不强制实现语言。Link 不创建统一 Adapter Framework（无 BaseAdapter / registry / plugin loader / daemon）。工具命名呈现须符合 §4.6。已知的合规呈现形态：
-- **true deferred tools**（如 Pi）：四工具全部注册，`session_start` 时把 Tier 1 移出 active 集合，gateway 以加性方式启用 Tier 1；close 保持顺序执行以保证 send 先完成；
+- **true deferred tools**（如 Pi）：四工具全部注册，`session_start` 时把 Tier 1 移出 active 集合，gateway 以加性方式启用 Tier 1；close 保持 sequential 以避免 sibling-call 竞态（execution safety，不定义 send-before-close workflow）；
 - **single-gateway dispatch**（宿主无公开的动态启停 API 时，如 OpenCode）：模型面常驻且仅有一个极小 `herdr_link` dispatcher，空参调用幂等激活本 session，随后以 `action: start|peers|send|close` 分发到同一控制层；Active Contract semantics 仅在已激活 session 暴露；
 - **shared MCP：listChanged 优先 + gateway fallback**（Claude Code / Codex / AGY 等）：dormant `tools/list` 只返回 gateway；声明 `tools.listChanged` capability，激活时发射一次 `notifications/tools/list_changed`；active `tools/list` 返回 gateway + Tier 1；不响应刷新的 Host 通过 gateway 显式 action 分发保持全功能。MCP activation 按 stdio 连接（即宿主为本 session 拉起的 server 进程）记忆，连接结束即回到 dormant。
 

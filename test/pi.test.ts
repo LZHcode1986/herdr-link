@@ -194,11 +194,14 @@ test("Pi adapter — Tier 0/Tier 1", async (t) => {
       assert.equal(tool.promptSnippet, undefined, `${name} must rely on its description`);
       assert.ok((tool.description ?? "").length > 0, `${name} description must stand alone`);
     }
-    // close keeps sequential semantics with send-before-close guidance.
+    // close keeps an execution-order safety property only: the caller owns the
+    // lifecycle decision and closing never sends a message.
     const close = findTool(tools, "herdr_link_close");
     assert.equal(close.executionMode, "sequential");
-    assert.match(close.description ?? "", /sent/);
     assert.match(close.description ?? "", /later tool step/);
+    assert.match(close.description ?? "", /caller owns the lifecycle decision/);
+    assert.match(close.description ?? "", /Closing sends no message/);
+    assert.doesNotMatch(close.description ?? "", /final message|send first/i);
   });
 
   await t.test("gateway activates idempotently via setActiveTools, never Herdr IO", async () => {

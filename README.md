@@ -46,7 +46,7 @@ Agent A → herdr_link_start(..., with="worker-a")       # same-tab: co-locate w
 Agent A → herdr_link_send(to="B", ...)     # status "sent"
 Agent B → (receives inbound wrapper) herdr_link {}   # auto-activation trigger
 Agent B → herdr_link_send(to="A", message="result or done")
-Anyone  → herdr_link_close(agent="worker-a")   # in a later tool step after the final send
+Anyone  → herdr_link_close(agent="worker-a")   # caller-owned decision; a standalone later tool step
 ```
 
 - **Dormant tier:** only the `herdr_link` gateway is visible; calling it with `{}` activates the session once (idempotent, in-memory only).

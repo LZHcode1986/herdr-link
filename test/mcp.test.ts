@@ -267,6 +267,10 @@ test("MCP server request handler", async (t) => {
     assert.match(descriptionByName.get("herdr_link_peers") ?? "", /same-workspace agent names/);
     assert.match(descriptionByName.get("herdr_link_send") ?? "", /"sent" is delivery only/);
     assert.match(descriptionByName.get("herdr_link_close") ?? "", /later tool step/);
+    const closeDescription = descriptionByName.get("herdr_link_close") ?? "";
+    assert.match(closeDescription, /caller owns the lifecycle decision/);
+    assert.match(closeDescription, /Closing sends no message/);
+    assert.doesNotMatch(closeDescription, /final message|send first/i);
     assert.match(descriptionByName.get("herdr_link_start") ?? "", /Link-managed placement/);
     for (const name of [HERDR_LINK_GATEWAY, ...HERDR_LINK_TOOLS]) {
       assert.match(descriptionByName.get(name) ?? "", /Use Herdr Link, not raw Herdr CLI/);

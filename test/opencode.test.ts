@@ -98,6 +98,7 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.deepEqual(Object.keys(hooks.tool ?? {}), [HERDR_LINK_GATEWAY]);
     assert.match(gateway.description, /only when the user explicitly asks to use Herdr/);
     assert.match(gateway.description, /handling an inbound Herdr Link message/);
+    assert.doesNotMatch(gateway.description, /final send/i);
     for (const tier1 of [TOOL_PEERS, TOOL_SEND, TOOL_CLOSE]) {
       assert.equal(hooks.tool?.[tier1], undefined);
     }
@@ -199,6 +200,10 @@ test("OpenCode adapter environment gating and gateway fallback", async (t) => {
     assert.match(active.system[1] ?? "", /no reply when explicitly requested/);
     assert.match(active.system[1] ?? "", /peer state never proves completion/);
     assert.match(active.system[1] ?? "", /later tool step/);
+    assert.match(active.system[1] ?? "", /caller owns the lifecycle decision/);
+    assert.match(active.system[1] ?? "", /Closing sends no message/);
+    assert.doesNotMatch(active.system[1] ?? "", /final send/i);
+    assert.doesNotMatch(active.system[1] ?? "", /final message|send first/i);
 
     // Repeated transforms stay idempotent.
     await transform({ sessionID: "active-session", model: {} as never }, active as never);

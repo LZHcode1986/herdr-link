@@ -207,7 +207,7 @@ test("COMMUNICATION_CONTRACT states compact same-workspace send/reply/close sema
   // Compact: one intro line plus the numbered rules, nothing else.
   const rules = lines.filter((line) => /^[0-9]+\. /.test(line));
   assert.equal(lines.length, rules.length + 1);
-  assert.ok(rules.length >= 5 && rules.length <= 10, "contract must stay compact");
+  assert.equal(rules.length, 6, "contract must stay at exactly 6 numbered rules");
 
   // Same-workspace addressing…
   // …passive-wait semantics…
@@ -238,6 +238,17 @@ test("PROTOCOL.md §3 and MCP wiring §1.1 exactly match the machine Contract so
   assert.ok(docsMatch?.[1], "docs/mcp-wiring.md §1.1 must contain the canonical Contract block");
   assert.equal(protocolMatch[1], COMMUNICATION_CONTRACT);
   assert.equal(docsMatch[1], COMMUNICATION_CONTRACT);
+});
+test("PROTOCOL.md close rules keep the caller-owned, mechanical close semantics", () => {
+  const protocol = readFileSync(new URL("../PROTOCOL.md", import.meta.url), "utf8");
+  // The removed wording is what nudged the model into a termination-only closing message.
+  assert.doesNotMatch(protocol, /最终消息/);
+  assert.doesNotMatch(protocol, /保证 send 先完成/);
+  assert.doesNotMatch(protocol, /final message|send first/i);
+  const closeSection = protocol.match(/### 4\.5 Tier 1：`herdr_link_close`[\s\S]*?(?=### 4\.6)/);
+  assert.ok(closeSection?.[0], "PROTOCOL.md §4.5 must stay present");
+  assert.match(closeSection[0], /调用方/);
+  assert.match(closeSection[0], /不发送消息/);
 });
 test("package allowlist includes the official agent config example", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { files?: unknown };

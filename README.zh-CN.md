@@ -46,7 +46,7 @@ Agent A → herdr_link_start(..., with="worker-a")       # 同 tab：与 live Ag
 Agent A → herdr_link_send(to="B", ...)     # status "sent"
 Agent B → （收到 inbound wrapper）herdr_link {}   # 自动激活触发
 Agent B → herdr_link_send(to="A", message="结果或 done")
-任意一方 → herdr_link_close(agent="worker-a")   # 最终 send 返回 sent 之后的工具步骤
+任意一方 → herdr_link_close(agent="worker-a")   # 由调用方决定；独立的后续工具步骤
 ```
 
 - **Dormant 层**：只有 `herdr_link` gateway 可见；空参 `{}` 调用一次性激活当前 session（幂等、纯内存态）。
