@@ -178,17 +178,34 @@ cp src/herdr.ts src/protocol.ts ~/.pi/agent/extensions/herdr-link/
 
 After installation the adapter registers the `herdr_link` gateway plus the four Tier 1 tools; Tier 1 starts inactive each session and is enabled (with contract injection) when the model calls `herdr_link {}`.
 
-### OpenCode (single-file plugin)
+### OpenCode (V1 / V2 runtime bundles)
 
-OpenCode loads **every file** in its plugin directory as a plugin, so deploy the prebuilt single-file bundle — never loose source files:
+OpenCode loads **every file** in its plugin directory as a plugin, so exactly one prebuilt bundle must be deployed — never loose source files, and never both runtime bundles at once. One npm package ships two isolated bundles:
+
+| OpenCode runtime | Bundle |
+|---|---|
+| OpenCode 1 (V1) | `dist/herdr-link.opencode.js` |
+| OpenCode 2 (V2) | `dist/herdr-link.opencode-v2.js` |
+
+Deploy exactly one of them with the packaged installer:
 
 ```bash
-npm install -g herdr-link    # or: build from source with npm run build:opencode
-cp "$(npm root -g)/herdr-link/dist/herdr-link.opencode.js" \
-   ~/.config/opencode/plugins/herdr-link.js
+npm install -g herdr-link
+herdr-link-opencode-install --runtime v1 --dry-run   # or --runtime v2
+herdr-link-opencode-install --runtime v1             # or --runtime v2
 ```
 
+The installer is a Node CLI, so the same commands work in Windows PowerShell, Linux (including WSL), and macOS. It detects the OpenCode configuration directory (`opencode debug paths`, then HOME/XDG/AppData defaults), verifies the bundle against the shipped `dist/herdr-link.opencode.manifest.json` (runtime marker + SHA-256), scans global and project-level plugin directories for duplicate Herdr Link entries, refuses to overwrite unrecognized files without explicit confirmation (`--yes` for non-interactive runs), keeps a timestamped backup on replacement, replaces the file atomically, and verifies the deployed file's export shape. If that final verification fails, the installer rolls back automatically — restoring the timestamped backup, or removing the file it just wrote when no previous file existed — and reports the outcome.
+WSL installs into the WSL configuration directory only; a native Windows OpenCode installation is a separate configuration and is never touched.
+
+**OpenCode V1 additionally requires `@opencode-ai/plugin` to be resolvable from the plugin directory.** The installer prechecks it with Node ESM resolution (`import.meta.resolve`) plus a filesystem version read (supported: `^1.18.13`); it never installs dependencies, and a failed precheck aborts deployment with a fix instruction. V2 has no SDK prerequisite.
+
+Switching runtimes rewrites the same target file: the installer reports the old and new runtime, requires explicit confirmation, and keeps the backup. `--dry-run` writes nothing. Direct `opencode plugin add herdr-link` is **not** a supported installation path; the package intentionally does not expose a plugin root export.
+To uninstall or roll back, delete `plugins/herdr-link.js`, or restore the timestamped backup to return to the previous runtime; the installer only ever removes its own target file after a failed post-deploy verification, never other plugins or user files.
+
 OpenCode has no per-session tool toggle API, so the adapter presents a **single-gateway dispatcher**: `{}` activates, then `{"action":"start"|"peers"|"send"|"close", ...}` dispatches to the same control layer. Start accepts `name + config_agent` or complete `name + kind + args`, with optional `with` / `cwd`; the modes do not merge. The contract is injected into the system prompt of activated sessions only (in-memory per `sessionID`; a server restart returns to dormant).
+
+The V2 adapter registers the single `herdr_link` gateway through `ctx.tool.transform`, injects its contract per activated session through `ctx.session.hook("context")`, resolves each session's project directory through `ctx.session.get({ sessionID })`, and fails closed when the session directory cannot be attributed to exactly one live pane in the caller's workspace.
 
 ### Claude Code / Codex / AGY (shared stdio MCP server)
 
@@ -242,8 +259,10 @@ The repository ships everything needed to audit and extend the project (`test/`,
 npm install
 npm run typecheck
 npm test                    # node --experimental-strip-types --test test/*.test.ts
-npm run build:opencode      # dist/herdr-link.opencode.js
+npm run build:opencode      # dist/herdr-link.opencode.js (V1)
+npm run build:opencode-v2   # dist/herdr-link.opencode-v2.js (V2)
 npm run build:mcp           # dist/herdr-link.mcp.js
+npm run check:opencode-bundles  # manifest, runtime marker, SHA-256, import isolation
 ```
 
 Layout:
@@ -254,10 +273,15 @@ src/protocol.ts              protocol core: types, envelope/wrapper builders, er
 src/herdr.ts                 Herdr CLI control layer: configured/explicit Agent start, JSON config parsing, cursor, live identity/workspace resolution
 src/pi.ts                    Pi adapter: gateway + deferred Tier 1 (setActiveTools), post-activation contract injection
 src/opencode.ts              OpenCode adapter: single-gateway dispatcher + per-sessionID contract injection
+src/opencode-v2.ts           OpenCode 2 adapter: ctx.tool.transform gateway, per-session context hook, session-scoped project directory
 src/mcp.ts                   shared stdio MCP server: JSON-RPC, lazy tool list, gateway dispatch
 docs/mcp-wiring.md           registration & Tier-0 hint wiring for Claude Code / Codex / AGY
-dist/*.js                    prebuilt bundles (opencode plugin, MCP server bin)
+dist/*.js                    prebuilt bundles (OpenCode V1/V2 plugin, MCP server bin)
+dist/herdr-link.opencode.manifest.json  build manifest: runtime, version, SHA-256 per bundle
 scripts/mcp-probe.mjs        stdio handshake debugging probe
+scripts/install-opencode.mjs  OpenCode runtime installer (bin: herdr-link-opencode-install)
+scripts/build-opencode.mjs    OpenCode bundle build + manifest generation
+scripts/check-opencode-bundles.mjs  bundle/manifest/import-isolation checks
 ```
 
 Layering rule: `protocol.ts` has zero Herdr IO; `herdr.ts` only drives the Herdr control plane (`execFile` argv arrays, no shell); `pi.ts` / `opencode.ts` / `mcp.ts` only do runtime wiring. Activation state lives in memory per runtime session: never persisted, never restored across sessions.

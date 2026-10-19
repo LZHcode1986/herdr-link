@@ -19,7 +19,26 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:opencode && npm run build:opencode-v2 && npm run build:mcp
+      - run: npm run check:opencode-bundles && npm run check:mcp-bundle
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,7 +52,18 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build:opencode && npm run build:mcp && npm run check:mcp-bundle && head -1 dist/herdr-link.mcp.js | grep -q '#!'
+      - run: npm run build:opencode && npm run build:opencode-v2 && npm run build:mcp
+      - run: npm run check:opencode-bundles && npm run check:mcp-bundle
+      - name: Verify the publish tarball
+        run: |
+          set -euo pipefail
+          pack_dir="$(mktemp -d)"
+          npm pack --pack-destination "$pack_dir" >/dev/null
+          tarball="$(ls "$pack_dir"/herdr-link-*.tgz)"
+          mkdir -p "$pack_dir/extracted"
+          tar -xzf "$tarball" -C "$pack_dir/extracted"
+          node scripts/check-opencode-bundles.mjs --root "$pack_dir/extracted/package"
+          node scripts/check-mcp-bundle.mjs --root "$pack_dir/extracted/package"
       - name: Publish to npm with provenance
         if: ${{ !inputs.dry_run }}
         run: npm publish --provenance --access public

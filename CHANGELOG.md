@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
+### Added
+
+- **Isolated OpenCode V1/V2 runtime adapters**: `src/opencode.ts` builds to `dist/herdr-link.opencode.js` (V1; static `@opencode-ai/plugin` import) and `src/opencode-v2.ts` builds to `dist/herdr-link.opencode-v2.js` (V2; no runtime SDK import). Neither bundle references the other runtime's SDK; the shared Herdr core (`src/herdr.ts`, `src/protocol.ts`) is inlined into both.
+- **`herdr-link-opencode-install`** (cross-platform Node CLI, `scripts/install-opencode.mjs`): explicit `--runtime v1|v2` selection, `--dry-run`, non-interactive `--yes`, configuration-directory detection via `opencode debug paths` / HOME / XDG / AppData, runtime marker + SHA-256 verification against the shipped build manifest, global and project-level duplicate and cross-runtime entry detection, backup and atomic replacement behind explicit confirmation, and runtime-specific export-shape verification of the deployed file. A failed post-deploy verification rolls back automatically — restoring the timestamped backup, or removing the file it just wrote when no previous file existed — and reports the outcome. Direct `opencode plugin add herdr-link` is not a supported installation path.
+- Mandatory V1 SDK precheck from the final plugin directory: Node ESM `import.meta.resolve` plus a filesystem `package.json` version read (supported range `^1.18.13`). `createRequire(...).resolve()` is never used: the pure-ESM SDK package fails it under the `require` condition.
+- Fixed build manifest `dist/herdr-link.opencode.manifest.json` (runtime, version, byte size and SHA-256 per bundle) and `npm run check:opencode-bundles`: manifest, runtime marker and hash verification, import-graph isolation, build reproducibility, and `--root` verification of an extracted npm tarball.
+- V2 session-project resolution: `herdr_link` resolves the calling session's project directory through `ctx.session.get({ sessionID })`; configured starts fail closed unless that directory uniquely identifies exactly one live pane in the caller's workspace.
+
+### Changed
+
+- OpenCode installation is installer-driven; README and README.zh-CN document runtime selection, switching, rollback and the per-platform commands.
+- CI and Release build and verify both OpenCode bundles and the MCP bundle; Release inspects the actual npm tarball (`--root`) before `npm publish`.
+- CI and Release run the full verification matrix on Linux, Windows and macOS (Node 22/24); Release publishes only after that matrix passes.
+- Builds and tests no longer depend on a POSIX shell: `build:mcp` goes through the esbuild API (the MCP bundle's `#!` banner is asserted by `check:mcp-bundle`), and the test fake for the spawned Herdr CLI is a Node preload hook instead of a `#!/bin/sh` script.
+- Version manifests (`package.json`, `package-lock.json`, `herdr-plugin.toml`, `src/mcp.ts`, MCP bundle) unified at `0.6.0`.
+
 ## [0.5.1] - 2026-10-03
 
 ### Changed
