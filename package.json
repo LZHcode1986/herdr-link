@@ -34,8 +34,8 @@
   "homepage": "https://github.com/LZHcode1986/herdr-link#readme",
   "bugs": "https://github.com/LZHcode1986/herdr-link/issues",
   "bin": {
-    "herdr-link": "./dist/herdr-link.mcp.js",
-    "herdr-link-opencode-install": "./scripts/install-opencode.mjs"
+    "herdr-link": "dist/herdr-link.mcp.js",
+    "herdr-link-opencode-install": "scripts/install-opencode.mjs"
   },
   "engines": {
     "node": ">=22.6.0"
