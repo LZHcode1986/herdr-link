@@ -1,6 +1,6 @@
 {
   "name": "herdr-link",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "pi": {
     "extensions": [
       "./src/pi.ts"
@@ -20,7 +20,9 @@
     "examples/",
     "dist/",
     "src/",
-    "scripts/mcp-probe.mjs"
+    "scripts/mcp-probe.mjs",
+    "scripts/install-opencode.mjs",
+    "scripts/build-opencode.mjs"
   ],
   "type": "module",
   "license": "MIT",
@@ -32,17 +34,20 @@
   "homepage": "https://github.com/LZHcode1986/herdr-link#readme",
   "bugs": "https://github.com/LZHcode1986/herdr-link/issues",
   "bin": {
-    "herdr-link": "./dist/herdr-link.mcp.js"
+    "herdr-link": "./dist/herdr-link.mcp.js",
+    "herdr-link-opencode-install": "./scripts/install-opencode.mjs"
   },
   "engines": {
     "node": ">=22.6.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
-    "build:opencode": "esbuild src/opencode.ts --bundle --format=esm --platform=node --external:@opencode-ai/plugin --outfile=dist/herdr-link.opencode.js",
-    "build:mcp": "esbuild src/mcp.ts --bundle --format=esm --platform=node --target=node22 --banner:js='#!/usr/bin/env node' --outfile=dist/herdr-link.mcp.js",
-    "check:mcp-bundle": "node scripts/check-mcp-bundle.mjs"
+    "test": "node --experimental-strip-types --test --test-concurrency=1 test/*.test.ts",
+    "build:opencode": "node scripts/build-opencode.mjs --runtime v1",
+    "build:mcp": "node scripts/build-mcp.mjs",
+    "check:mcp-bundle": "node scripts/check-mcp-bundle.mjs",
+    "check:opencode-bundles": "node scripts/check-opencode-bundles.mjs",
+    "build:opencode-v2": "node scripts/build-opencode.mjs --runtime v2"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -59,6 +64,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@opencode-ai/plugin": "^1.18.13",
+    "@opencode/plugin": "2.0.32",
     "@types/node": "^24.0.0",
     "esbuild": "^0.25.0",
     "typebox": "^1.3.7",

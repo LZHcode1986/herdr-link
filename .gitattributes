@@ -1,0 +1,4 @@
+# Normalize every tracked text file to LF on all platforms: the OpenCode
+# bundles are verified byte-for-byte against the build manifest, and the MCP
+# bundle ships a shebang, so a CRLF checkout would break both.
+* text=auto eol=lf

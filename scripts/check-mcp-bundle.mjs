@@ -3,11 +3,20 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+let root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const rootArgIndex = process.argv.indexOf("--root");
+if (rootArgIndex !== -1) {
+  const value = process.argv[rootArgIndex + 1];
+  if (!value) throw new Error("--root requires a directory");
+  root = resolve(value);
+}
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const bundlePath = resolve(root, "dist/herdr-link.mcp.js");
 const requiredTools = ["herdr_link_start", "herdr_link_peers", "herdr_link_send", "herdr_link_close"];
 const bundle = readFileSync(bundlePath, "utf8");
+if (!bundle.startsWith("#!/usr/bin/env node")) {
+  throw new Error("MCP bundle is missing its shebang; it would not run as an installed bin");
+}
 
 for (const tool of requiredTools) {
   if (!bundle.includes(JSON.stringify(tool))) {

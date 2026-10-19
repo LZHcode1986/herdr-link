@@ -1,0 +1,20 @@
+{
+  "name": "herdr-link",
+  "version": "0.6.0",
+  "bundles": {
+    "v1": {
+      "runtime": "v1",
+      "file": "dist/herdr-link.opencode.js",
+      "version": "0.6.0",
+      "bytes": 36855,
+      "sha256": "3a9dd5910b5a53df16acf6c9aaf909d38e4c8650dc7ad679fa46ffa1419df59c"
+    },
+    "v2": {
+      "runtime": "v2",
+      "file": "dist/herdr-link.opencode-v2.js",
+      "version": "0.6.0",
+      "bytes": 38816,
+      "sha256": "4db2e53909d3eaf220e0acf4d79b6ca82095dcb2075ac166521b77b6cdbbce5c"
+    }
+  }
+}

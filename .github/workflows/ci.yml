@@ -7,9 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node: [22, 24]
     steps:
       - uses: actions/checkout@v4
@@ -19,4 +21,5 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build:opencode && npm run build:mcp && npm run check:mcp-bundle && head -1 dist/herdr-link.mcp.js | grep -q '#!'
+      - run: npm run build:opencode && npm run build:opencode-v2 && npm run build:mcp
+      - run: npm run check:opencode-bundles && npm run check:mcp-bundle

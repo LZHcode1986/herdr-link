@@ -167,17 +167,34 @@ cp src/herdr.ts src/protocol.ts ~/.pi/agent/extensions/herdr-link/
 
 安装后 Adapter 注册 `herdr_link` gateway 与四个 Tier 1 工具；每个 session 开始时 Tier 1 处于 inactive，模型调用 `herdr_link {}` 后启用并注入契约。
 
-### OpenCode（单文件插件）
+### OpenCode（V1 / V2 独立 bundle）
 
-OpenCode 把插件目录里**每个文件**都当作 plugin 加载，因此必须部署预构建的单文件 bundle——绝不能平铺源文件：
+OpenCode 把插件目录里**每个文件**都当作 plugin 加载，因此只能部署**一份**预构建 bundle——不能平铺源文件，也不能同时放入两个 Runtime 的 bundle。同一个 npm 包提供两份互相隔离的构建：
+
+| OpenCode Runtime | Bundle |
+|---|---|
+| OpenCode 1（V1） | `dist/herdr-link.opencode.js` |
+| OpenCode 2（V2） | `dist/herdr-link.opencode-v2.js` |
+
+用包内安装器部署其中的一份：
 
 ```bash
-npm install -g herdr-link    # 或源码构建：npm run build:opencode
-cp "$(npm root -g)/herdr-link/dist/herdr-link.opencode.js" \
-   ~/.config/opencode/plugins/herdr-link.js
+npm install -g herdr-link
+herdr-link-opencode-install --runtime v1 --dry-run   # 或 --runtime v2
+herdr-link-opencode-install --runtime v1             # 或 --runtime v2
 ```
 
+安装器是 Node CLI，Windows PowerShell、Linux（含 WSL）与 macOS 使用同一组命令。它会确定 OpenCode 配置目录（优先 `opencode debug paths`，其次 HOME/XDG/AppData 默认值），用包内固定的 `dist/herdr-link.opencode.manifest.json` 校验 bundle 的 Runtime 标记与 SHA-256，扫描全局与项目级插件目录中的重复 Herdr Link 入口，未经明确确认（非交互场景用 `--yes`）绝不覆盖来源不明的文件，替换前保留带时间戳的备份，原子替换后校验部署文件的导出形状；最终校验失败会自动回滚——恢复带时间戳的备份，或在没有旧文件时删除本次刚写入的文件，并明确报告回滚结果。
+WSL 安装只作用于 WSL 自己的配置目录；Windows 原生 OpenCode 属于独立配置，不会被修改。
+
+**OpenCode V1 还要求插件目录能够解析 `@opencode-ai/plugin`。** 安装器会用 Node ESM 解析（`import.meta.resolve`）+ 文件系统版本读取做预检（支持范围 `^1.18.13`），不会代为安装依赖；预检失败会带修复指引中止部署。V2 没有该 SDK 前置要求。
+
+切换 Runtime 会重写同一个目标文件：安装器会显示旧、新 Runtime，要求明确确认并保留备份。`--dry-run` 不写任何文件。直接使用 `opencode plugin add herdr-link` **不是**受支持的安装方式；包的根路径刻意不暴露插件导出。
+卸载即删除 `plugins/herdr-link.js`；需要回退时恢复带时间戳的备份即可。安装器只会删除校验失败时自己刚写入的目标文件，不会删除其他插件或用户文件。
+
 OpenCode 没有按 session 启停工具的 API，因此 Adapter 采用**single-gateway dispatcher** 呈现：`{}` 激活，之后 `{"action":"start"|"peers"|"send"|"close", ...}` 分发到同一控制层。`start` 使用 `name + config_agent` 或完整的 `name + kind + args`，可选 `with` / `cwd` 控制 placement；两种模式不合并。契约只注入已激活 session 的 system prompt（按 `sessionID` 记忆的内存态；server 重启回到 dormant）。
+
+V2 使用 `ctx.tool.transform` 注册 `herdr_link`，并通过 `ctx.session.hook("context")` 只向已激活会话注入通信契约；每次工具调用通过 `ctx.session.get({sessionID})` 解析发起会话的项目目录，且只有当该目录在调用者 workspace 内唯一对应一个 live pane 时才继续，否则 fail closed。V1 入口保留，互不覆盖。
 
 ### Claude Code / Codex / AGY（共享 stdio MCP server）
 
@@ -231,8 +248,10 @@ MCP 同样是惰性呈现：非 Herdr 环境 `tools/list` 返回空集；Herdr m
 npm install
 npm run typecheck
 npm test                    # node --experimental-strip-types --test test/*.test.ts
-npm run build:opencode      # dist/herdr-link.opencode.js
+npm run build:opencode      # dist/herdr-link.opencode.js（V1）
+npm run build:opencode-v2   # dist/herdr-link.opencode-v2.js（V2）
 npm run build:mcp           # dist/herdr-link.mcp.js
+npm run check:opencode-bundles  # manifest、Runtime 标记、SHA-256、导入隔离
 ```
 
 目录结构：
@@ -243,10 +262,15 @@ src/protocol.ts              协议核心：类型、envelope/wrapper 构建、�
 src/herdr.ts                 Herdr CLI 控制层：configured/explicit Agent start、JSON 配置解析、cursor、live identity/workspace 解析
 src/pi.ts                    Pi Runtime Adapter：gateway + deferred Tier 1（setActiveTools），激活后注入契约
 src/opencode.ts              OpenCode Runtime Adapter：single-gateway dispatcher + 按 sessionID 契约注入
+src/opencode-v2.ts           OpenCode 2 Runtime Adapter：ctx.tool.transform gateway、按 session 注入契约、会话级项目目录
 src/mcp.ts                   共享 stdio MCP server：JSON-RPC、惰性工具列表、gateway dispatch
 docs/mcp-wiring.md           Claude Code / Codex / AGY 注册与 Tier-0 hint 接线指南
-dist/*.js                    预构建 bundle（opencode 插件、MCP server bin）
+dist/*.js                    预构建 bundle（OpenCode V1/V2 插件、MCP server bin）
+dist/herdr-link.opencode.manifest.json 构建清单：各 bundle 的 Runtime、版本与 SHA-256
 scripts/mcp-probe.mjs        stdio 握手排障探针
+scripts/install-opencode.mjs  OpenCode Runtime 安装器（bin: herdr-link-opencode-install）
+scripts/build-opencode.mjs    OpenCode bundle 构建 + manifest 生成
+scripts/check-opencode-bundles.mjs  bundle/manifest/导入隔离检查
 ```
 
 分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线。activation 是各 Adapter 内存中的 session 局部状态：不持久化、不跨 session 恢复。

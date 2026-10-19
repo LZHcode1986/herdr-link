@@ -1,20 +1,25 @@
 #!/usr/bin/env node
 /**
  * MCP stdio probe: spawns the real herdr-link bundle and tees both
- * directions to /tmp/mcp-probe.log so the raw handshake with a host
- * (codex) can be inspected. stdout of this process carries only the
+ * directions to a log file in the OS temp directory so the raw handshake with
+ * a host (codex) can be inspected. stdout of this process carries only the
  * server's responses; all logging goes to the file.
  */
 import { spawn } from "node:child_process";
-import { createWriteStream, openSync } from "node:fs";
+import { createWriteStream } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const log = createWriteStream("/tmp/mcp-probe.log", { flags: "a" });
+const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const bundlePath = resolve(root, "dist/herdr-link.mcp.js");
+const log = createWriteStream(join(tmpdir(), "mcp-probe.log"), { flags: "a" });
 const stamp = () => new Date().toISOString().slice(11, 23);
 const dump = (dir, chunk) => {
   log.write(`[${stamp()}] ${dir}: ${JSON.stringify(String(chunk))}\n`);
 };
 
-const child = spawn(process.execPath, ["/home/dev/projects/herdr-link/dist/herdr-link.mcp.js"], {
+const child = spawn(process.execPath, [bundlePath], {
   stdio: ["pipe", "pipe", "pipe"],
   env: process.env,
 });

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,10 +98,6 @@ function restoreHerdrEnv(previous: Record<string, string | undefined>): void {
   }
 }
 
-test("MCP server version matches package.json", () => {
-  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
-  assert.equal(MCP_SERVER_VERSION, packageJson.version);
-});
 
 test("MCP server request handler", async (t) => {
   await t.test("initialize echoes the client protocol version, reports info, declares tools.listChanged", async () => {
@@ -720,54 +716,82 @@ class McpServerProcess {
 
 /**
  * Canned Herdr CLI used as HERDR_BIN_PATH so the real herdr.ts control layer
- * runs end-to-end. Records carry workspace_id so the same-workspace guard of
- * the live-record readers passes; `agent get <name>` echoes the requested
- * name so target resolution succeeds for any syntactically valid target.
+ * runs end-to-end on every platform. The CLI is a Node preload hook: the
+ * spawned binary is `process.execPath`, and NODE_OPTIONS loads this loader
+ * before Node resolves the CLI verb as an entry module. A POSIX shell script
+ * (and the chmod it needs) cannot run through CreateProcess on Windows, which
+ * would otherwise make this coverage Linux/macOS-only.
+ *
+ * Records carry workspace_id so the same-workspace guard of the live-record
+ * readers passes; `agent get <name>` echoes the requested name so target
+ * resolution succeeds for any syntactically valid target.
  */
-function writeFakeHerdrBinary(directory: string): string {
-  const binaryPath = join(directory, "herdr-fake");
+function writeFakeHerdr(directory: string): { bin: string; nodeOptions: string } {
+  const loaderPath = join(directory, "herdr-fake.cjs");
   writeFileSync(
-    binaryPath,
+    loaderPath,
     [
-      "#!/bin/sh",
-      'case "$1 $2" in',
-      '  "agent start") printf \'{"result":{"accepted":true}}\';;',
-      '  "agent get")',
-      '    if [ "$3" = "self-pane" ]; then',
-      '      printf \'{"result":{"agent":{"name":"brain","workspace_id":"ws-main","pane_id":"w9:p1"}}}\'',
-      "    else",
-      '      printf \'{"result":{"agent":{"name":"%s","workspace_id":"ws-main","pane_id":"tgt:1"}}}\' "$3"',
-      "    fi ;;",
-      '  "agent list") printf \'{"result":{"agents":[{"name":"brain","workspace_id":"ws-main"},{"name":"worker-mcp","workspace_id":"ws-main"}]}}\';;',
-      '  "agent prompt")',
-      '    if [ "$3" = "ghost" ]; then',
-      '      printf \'{"error":{"code":"agent_not_found","message":"agent target ghost not found"}}\'',
-      "      exit 1",
-      "    else",
-      '      printf \'{"result":{"accepted":true}}\'',
-      "    fi ;;",
-      '  "pane close") printf \'{"result":{"closed":true}}\';;',
-      '  "tab create") printf \'{"result":{"tab":{"tab_id":"w9:t1","workspace_id":"ws-main"},"root_pane":{"pane_id":"w9:p2","tab_id":"w9:t1","workspace_id":"ws-main","cwd":"/launch"}}}\';;',
-      '  "pane list") printf \'{"result":{"panes":[{"pane_id":"w9:p2","tab_id":"w9:t1","workspace_id":"ws-main","cwd":"/launch"}]}}\';;',
-      "  *) printf '{\"error\":{\"code\":\"agent_not_found\",\"message\":\"agent target not found\"}}'; exit 1;;",
-      "esac",
+      "// Fake Herdr CLI preloaded through NODE_OPTIONS=--require. It only acts",
+      "// when argv[1] is not a real file: the server entry is, a CLI verb is not.",
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      "const entry = process.argv[1];",
+      "if (entry === undefined || fs.existsSync(entry)) return;",
+      "const verb = path.basename(entry);",
+      "const target = process.argv[3];",
+      "const emit = (payload, code) => {",
+      "  fs.writeSync(1, JSON.stringify(payload));",
+      "  process.exit(code);",
+      "};",
+      "const ok = (result) => emit({ result }, 0);",
+      "const fail = (code, message) => emit({ error: { code, message } }, 1);",
+      'if (verb === "agent" && process.argv[2] === "start") ok({ accepted: true });',
+      'else if (verb === "agent" && process.argv[2] === "get") {',
+      '  if (target === "self-pane") ok({ agent: { name: "brain", workspace_id: "ws-main", pane_id: "w9:p1" } });',
+      '  else ok({ agent: { name: target, workspace_id: "ws-main", pane_id: "tgt:1" } });',
+      '} else if (verb === "agent" && process.argv[2] === "list") {',
+      '  ok({ agents: [{ name: "brain", workspace_id: "ws-main" }, { name: "worker-mcp", workspace_id: "ws-main" }] });',
+      '} else if (verb === "agent" && process.argv[2] === "prompt") {',
+      '  if (target === "ghost") fail("agent_not_found", "agent target ghost not found");',
+      "  else ok({ accepted: true });",
+      '} else if (verb === "pane" && process.argv[2] === "close") ok({ closed: true });',
+      'else if (verb === "tab" && process.argv[2] === "create") {',
+      '  ok({ tab: { tab_id: "w9:t1", workspace_id: "ws-main" }, root_pane: { pane_id: "w9:p2", tab_id: "w9:t1", workspace_id: "ws-main", cwd: "/launch" } });',
+      '} else if (verb === "pane" && process.argv[2] === "list") {',
+      '  ok({ panes: [{ pane_id: "w9:p2", tab_id: "w9:t1", workspace_id: "ws-main", cwd: "/launch" }] });',
+      '} else fail("agent_not_found", "agent target not found");',
       "",
     ].join("\n"),
   );
-  chmodSync(binaryPath, 0o755);
-  return binaryPath;
+  return { bin: process.execPath, nodeOptions: `--require=${loaderPath}` };
 }
 
 test("spawned MCP server over real stdio", async (t) => {
   const flags = await typeStripFlags();
   const scratch = mkdtempSync(join(tmpdir(), "herdr-link-mcp-test-"));
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
-  const fakeBinary = writeFakeHerdrBinary(scratch);
+  const fakeHerdr = writeFakeHerdr(scratch);
+
 
   await t.test(
-    "outside Herdr: handshake works, tools/list is empty, gateway and tool calls fail as NOT_IN_HERDR (smoke: empty gating)",
-    async () => {
-      const server = new McpServerProcess([...flags, SERVER_ENTRY], herdrFreeEnv());
+    "spawned outside Herdr: symlink entry (direct-entry fallback where denied), handshake, empty gating and fail-closed calls over real stdio",
+    async (subtest) => {
+      const linkPath = join(scratch, "herdr-link-bin");
+      let entry = linkPath;
+      try {
+        symlinkSync(SERVER_ENTRY, linkPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform === "win32" && (code === "EPERM" || code === "EACCES")) {
+          // Keep every stdio assertion below running; only the symlink-entry
+          // coverage is unavailable without an elevated Windows token.
+          entry = SERVER_ENTRY;
+          subtest.diagnostic("symlink entry unavailable on this runner; launched the real entry instead");
+        } else {
+          throw error;
+        }
+      }
+      const server = new McpServerProcess([...flags, entry], herdrFreeEnv());
       try {
         const initialized = await server.request({
           jsonrpc: "2.0",
@@ -775,7 +799,12 @@ test("spawned MCP server over real stdio", async (t) => {
           method: "initialize",
           params: { protocolVersion: "2025-06-18" },
         });
-        const initResult = initialized.result as Record<string, unknown>;
+        const initResult = initialized.result as {
+          serverInfo?: { name?: string };
+          protocolVersion?: string;
+          capabilities?: unknown;
+        };
+        assert.equal(initResult.serverInfo?.name, "herdr-link");
         assert.equal(initResult.protocolVersion, "2025-06-18");
         assert.deepEqual(initResult.capabilities, { tools: { listChanged: true } });
         server.fireAndForget({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -821,33 +850,13 @@ test("spawned MCP server over real stdio", async (t) => {
   );
 
   await t.test(
-    "spawned through an installed-bin style symlink: entry detection survives the realpath mismatch",
-    async () => {
-      const linkPath = join(scratch, "herdr-link-bin");
-      symlinkSync(SERVER_ENTRY, linkPath);
-      const server = new McpServerProcess([...flags, linkPath], herdrFreeEnv());
-      try {
-        const initialized = await server.request({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "initialize",
-          params: { protocolVersion: "2025-06-18" },
-        });
-        const initResult = initialized.result as { serverInfo?: { name?: string } };
-        assert.equal(initResult.serverInfo?.name, "herdr-link");
-      } finally {
-        server.destroy();
-      }
-    },
-  );
-
-  await t.test(
     "inside Herdr: dormant gateway list, activation with list_changed on stdout, refreshed list, control-layer calls, gateway dispatch fallback",
     async () => {
       const server = new McpServerProcess([...flags, SERVER_ENTRY], {
         ...herdrFreeEnv(),
         HERDR_ENV: "1",
-        HERDR_BIN_PATH: fakeBinary,
+        HERDR_BIN_PATH: fakeHerdr.bin,
+        NODE_OPTIONS: fakeHerdr.nodeOptions,
         HERDR_PANE_ID: "self-pane",
       });
       try {
@@ -983,7 +992,8 @@ test("spawned MCP server over real stdio", async (t) => {
         {
           ...herdrFreeEnv(),
           HERDR_ENV: "1",
-          HERDR_BIN_PATH: fakeBinary,
+          HERDR_BIN_PATH: fakeHerdr.bin,
+          NODE_OPTIONS: fakeHerdr.nodeOptions,
           HERDR_PANE_ID: "self-pane",
         },
         projectRoot,

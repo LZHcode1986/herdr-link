@@ -756,29 +756,7 @@ test("Herdr control layer", async (t) => {
     });
   });
 
-  await t.test("concurrent ensureSelfName calls coalesce into one rename", async () => {
-    let liveName = "";
-    let renames = 0;
-    await withMock(async (_file, args) => {
-      if (args[0] === "agent" && args[1] === "rename") {
-        renames += 1;
-        liveName = String(args[3]);
-        await new Promise((resolve) => setTimeout(resolve, 20)); // overlap window
-        return { ok: true };
-      }
-      if (args[0] === "agent" && args[1] === "get") {
-        return { result: { agent: { name: liveName, workspace_id: "ws-1", pane_id: "self-pane" } } };
-      }
-      throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-    }, async () => {
-      const [a, b] = await Promise.all([ensureSelfName(), ensureSelfName()]);
-      assert.equal(a, b);
-      assert.equal(renames, 1);
-      assert.match(a, /^hl-[0-9a-f]{8}$/);
-    });
-  });
-
-  await t.test("startup bootstrap racing a communication fallback renames exactly once", async () => {
+  await t.test("concurrent ensureSelfName calls and a communication fallback coalesce into one rename", async () => {
     let liveName = "";
     let renames = 0;
     await withMock(async (_file, args) => {
@@ -793,9 +771,11 @@ test("Herdr control layer", async (t) => {
       }
       throw new Error(`unexpected CLI call: ${args.join(" ")}`);
     }, async () => {
-      const [name, context] = await Promise.all([ensureSelfName(), getSelfContext()]);
-      assert.equal(context.name, name);
+      const [a, b, context] = await Promise.all([ensureSelfName(), ensureSelfName(), getSelfContext()]);
+      assert.equal(a, b);
+      assert.equal(context.name, a);
       assert.equal(renames, 1);
+      assert.match(a, /^hl-[0-9a-f]{8}$/);
     });
   });
 

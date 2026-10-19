@@ -676,6 +676,34 @@ function filterPanesByTab(value: unknown, tabId: string): string[] {
   return paneIds;
 }
 
+/** One pane's live directory facts for identity cross-checks; topology stays internal. */
+export interface WorkspacePane {
+  pane_id: string;
+  cwd?: string;
+  foreground_cwd?: string;
+}
+
+/** Parses workspace panes from a fresh `pane list` response. */
+function parsePaneListResult(value: unknown): WorkspacePane[] {
+  const root = asRecord(value);
+  const result = asRecord(root?.result);
+  const rawPanes = result?.panes ?? root?.panes;
+  if (!Array.isArray(rawPanes)) return [];
+  const panes: WorkspacePane[] = [];
+  for (const raw of rawPanes) {
+    const pane = asRecord(raw);
+    if (!pane) continue;
+    const paneId = nonEmptyString(pane.pane_id);
+    if (paneId === undefined) continue;
+    panes.push({
+      pane_id: paneId,
+      cwd: nonEmptyString(pane.cwd),
+      foreground_cwd: nonEmptyString(pane.foreground_cwd),
+    });
+  }
+  return panes;
+}
+
 /** Parses a pane record from `pane get` output. */
 function parsePaneInfoResult(value: unknown): PaneInfoRecord {
   const root = asRecord(value);
@@ -983,6 +1011,16 @@ export async function listPeers(): Promise<PeerDirectory> {
   }
 
   return { self: { name: self.name, state: self.agent_status }, peers };
+}
+
+/**
+ * Fresh `pane list --workspace <id>` for identity cross-checks: verifies that a
+ * session's project directory belongs to exactly one pane — the caller's own —
+ * and fails closed when attribution is ambiguous. Never cached.
+ */
+export async function listWorkspacePanes(workspaceId: string): Promise<WorkspacePane[]> {
+  const response = await runFor(["pane", "list", "--workspace", workspaceId], "NOT_IN_HERDR");
+  return parsePaneListResult(response);
 }
 
 /**
