@@ -247,7 +247,9 @@ async function withTempProject(
       writeFileSync(join(projectRoot, ".agents", "agent_config.json"), config);
     }
     process.chdir(projectRoot);
-    await callback(projectRoot);
+    // Hand the test body the canonical path production sees: macOS getcwd()
+    // resolves /var to /private/var, and Windows keeps the chdir'd form.
+    await callback(process.cwd());
   } finally {
     process.chdir(previousCwd);
     rmSync(projectRoot, { recursive: true, force: true });
@@ -945,7 +947,7 @@ test("Herdr control layer", async (t) => {
         });
         assert.deepEqual(receipt, { status: "started", agent: "worker-02", kind: "pi" });
         assert.deepEqual(calls[1]!.args, [
-          "tab", "create", "--workspace", "ws-1", "--cwd", `${projectRoot}/slices/w1`, "--no-focus",
+          "tab", "create", "--workspace", "ws-1", "--cwd", join(projectRoot, "slices", "w1"), "--no-focus",
         ]);
       });
     });
