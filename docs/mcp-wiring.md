@@ -144,7 +144,7 @@ searchTools("herdr_link_send");
 tools.mcp__herdr_link__herdr_link_send({ to: "<Agent Name>", message: "<message>" });
 ```
 
-Pi 不注入任何提示词文本，因此契约呈现刻意比其他 Host 更轻：dormant 触发条件来自 `mcp.json` 的 `description` 与 gateway 描述，激活后以共享 MCP 的工具描述为唯一契约来源。Claude Code / Codex / AGY 在启动时注入短 Tier-0 hint（§3–§5），OpenCode 注入按 session 的 Contract；Pi 两者都不做——按 PROTOCOL §3 的两档划分，Pi 采用最轻的「描述式」（连 Tier-0 hint 也不注入），Claude Code / Codex / AGY 同为描述式但带启动 hint，OpenCode 为注入式。唯一的 Pi 扩展是极简 wait guard：在 Herdr managed pane 内拦截 `herdr agent wait` 与 `herdr agent prompt ... --wait` 两类 Bash 命令，不注册工具、不修改提示词。它不依赖 MCP 的 dormant/active 状态。
+Pi 不注入任何提示词文本，因此契约呈现刻意比其他 Host 更轻：dormant 触发条件来自 `mcp.json` 的 `description` 与 gateway 描述，激活后以共享 MCP 的工具描述为唯一契约来源。Claude Code / Codex / AGY 在启动时注入短 Tier-0 hint（§3–§5），OpenCode 注入按 session 的 Contract；Pi 两者都不做——按 PROTOCOL §3 的两档划分，Pi 采用最轻的「描述式」（连 Tier-0 hint 也不注入），Claude Code / Codex / AGY 同为描述式但带启动 hint，OpenCode 为注入式。唯一的 Pi 扩展是极简 wait guard：在 Herdr managed pane 内拦截 `herdr agent wait` 与 `herdr agent prompt ... --wait` 两类 Bash 命令（引号、heredoc、here-string、注释内的同名文本不计），不注册工具、不修改提示词。它不依赖 MCP 的 dormant/active 状态。
 
 ## 3. Claude Code（launcher + shared MCP）
 

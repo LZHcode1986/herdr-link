@@ -259,7 +259,7 @@ Link 定义最小错误语义，全部是本地 tool operation failure，不是�
 - `tab create` / `pane split` 只能由 canonical `herdr_link_start` 内部的 Link-managed placement 流程进入；`tab close` 只用于 failed-start rollback 关闭本次刚创建的 exact tab，不提供通用 tab 管理。
 - raw tab/pane/workspace ID 不进入 model-facing 输入或 receipt；只存在于 Link 内部 allocation 层与 Herdr CLI adapter 内部。
 - `agent prompt` 的投递文本是 §2 定义的 self-describing inbound wrapper；除此之外不构造任何额外协议负载。
-- 不使用 `--wait`（无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、任何 workspace 控制命令。（Pi 上，极简 wait guard 在 Herdr managed pane 的 Bash 工具边界拦截 raw `herdr agent wait` 与 `herdr agent prompt ... --wait`；它不依赖 Link 的 dormant/active 状态。）
+- 不使用 `--wait`（无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、任何 workspace 控制命令。（Pi 上，极简 wait guard 在 Herdr managed pane 的 Bash 工具边界拦截 raw `herdr agent wait` 与 `herdr agent prompt ... --wait`；只认真正会执行的命令词，引号、heredoc、here-string 与注释内的文本不计；它不依赖 Link 的 dormant/active 状态。）
 - `agent rename` 仅限 §6.3 self identity bootstrap 使用：目标只能是当前 pane 中未命名的 live occupant；禁止将其暴露为模型工具、用于任何其他 pane/agent 目标，或在面向模型的文本中提示该动作。
 
 ## 9. Non-goals

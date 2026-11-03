@@ -171,7 +171,7 @@ pi install npm:herdr-link   # 尚未登记时执行
 
 `exposure: "codemode"` 不把 MCP 工具放进声明工具列表；模型通过 `searchTools()` 发现 gateway 与 Tier 1，使用 `tools.mcp__herdr_link__herdr_link({})` 激活，并通过 `mcp__herdr_link__*` namespace 调用 Tier 1。server 继承 Pi 进程的 `HERDR_*`。修改包或 MCP 配置后重启 Pi。
 
-Pi 不注入任何提示词文本，呈现方式刻意比其他 Host 更轻：dormant 阶段的触发条件来自 `mcp.json` 的 `description` 字段与 gateway 描述，激活后以共享 MCP 的工具描述为唯一契约来源。Claude Code、Codex、AGY 在启动时注入一段短 Tier-0 hint，OpenCode 注入按 session 的契约——Pi 两者都不做。PROTOCOL §3 把这定义为两档契约呈现之一——「描述式」（另一档为注入式），Pi 与其它 shared MCP Host 同属描述式。唯一保留的 Pi 扩展是极简 wait guard：在 Herdr managed pane 内拦截 `herdr agent wait` 与 `herdr agent prompt ... --wait` 两类 Bash 命令，不注册工具、不修改提示词。
+Pi 不注入任何提示词文本，呈现方式刻意比其他 Host 更轻：dormant 阶段的触发条件来自 `mcp.json` 的 `description` 字段与 gateway 描述，激活后以共享 MCP 的工具描述为唯一契约来源。Claude Code、Codex、AGY 在启动时注入一段短 Tier-0 hint，OpenCode 注入按 session 的契约——Pi 两者都不做。PROTOCOL §3 把这定义为两档契约呈现之一——「描述式」（另一档为注入式），Pi 与其它 shared MCP Host 同属描述式。唯一保留的 Pi 扩展是极简 wait guard：在 Herdr managed pane 内拦截 `herdr agent wait` 与 `herdr agent prompt ... --wait` 两类 Bash 命令，只匹配真正会执行的命令词（引号、heredoc/here-string 正文与注释内的同名文本不计），不注册工具、不修改提示词。
 
 ### OpenCode（V1 / V2 独立 bundle）
 
