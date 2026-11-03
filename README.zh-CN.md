@@ -9,7 +9,7 @@
 
 Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 workspace 内的 Agent 可以按调用方明确选择启动 Agent、互相发现、交换协议化消息、关闭已完成的 pane——通过一个 **lazy gateway** 暴露 **4 项核心能力**，**零学习成本**。
 
-提供 Pi（原生扩展）、OpenCode（插件 bundle）以及任意支持 MCP 的 Runtime 如 Claude Code / Codex / AGY（共享 stdio MCP server）的 Adapter。线上格式为 `herdr-link/1` 协议，唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)。
+提供 OpenCode（插件 bundle）以及 Pi / Claude Code / Codex / AGY 通过同一个共享 stdio MCP server 接入的 Adapter。线上格式为 `herdr-link/1` 协议，唯一规范见 [`PROTOCOL.md`](./PROTOCOL.md)。
 
 ## 为什么选择 Herdr Link？
 
@@ -19,7 +19,7 @@ Herdr Link 是运行在 Herdr 会话中的跨 Agent 按需互操作层。同一 
 - 这些推理过程**每次使用都在消耗 token 并增加延迟**；
 - 使用知识靠模型**反复自行推导**，而不是直接交给它。
 
-Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 4 项核心能力，并自动注入一份紧凑的通信契约：
+Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 4 项核心能力，并在激活后提供紧凑的通信契约：
 
 | | 官方 Herdr Skill 路线 | 使用 Herdr Link |
 |---|---|---|
@@ -30,7 +30,7 @@ Herdr Link 把这一步彻底去掉。Adapter 通过一个惰性 gateway 暴露 
 
 一句话总结：
 
-- **更少消耗。** 无需阅读、无需推导。dormant 态下模型只看到一个极小的 `herdr_link` gateway——无契约、无 schema；激活后也只注入一段简短契约，而不是一本手册。
+- **更少消耗。** 无需阅读、无需推导。dormant 态下模型只看到一个极小的 `herdr_link` gateway——无契约、无 schema；激活后获得紧凑的契约面，而不是一本手册。
 - **更快控制。** 启动 Agent、发现对端、发送协议化消息或关闭 pane 都是一次直接的工具调用——中间没有任何多步 CLI 编排。
 - **无感接入（零推理）。** 用户显式提出 Herdr 需求、或收到 inbound `herdr-link/1` 消息时自动激活；完成通过普通的 `herdr_link_send`：将指定结果发给 `from`；未指定结果时成功后精确发送 `done`；失败/阻塞时发送简短说明；只有明确要求不回复时才不发送。`done` 只是普通消息，不是 ACK、任务状态或投递回执。
 
@@ -49,8 +49,8 @@ Agent B → herdr_link_send(to="A", message="结果或 done")
 任意一方 → herdr_link_close(agent="worker-a")   # 由调用方决定；独立的后续工具步骤
 ```
 
-- **Dormant 层**：只有 `herdr_link` gateway 可见；空参 `{}` 调用一次性激活当前 session（幂等、纯内存态）。
-- **Active 层**：`herdr_link_start`、`herdr_link_peers`、`herdr_link_send`、`herdr_link_close`，外加紧凑 Communication Contract。每次通信调用都经 Herdr 实时解析身份/workspace 并执行同 workspace guard。
+- **Dormant 层**：只有 `herdr_link` gateway 可用；Codemode Host 通过 `searchTools()` 发现它。空参 `{}` 调用一次性激活当前 session（幂等、纯内存态）。
+- **Active 层**：`herdr_link_start`、`herdr_link_peers`、`herdr_link_send`、`herdr_link_close`，外加激活后的契约面。每次通信调用都经 Herdr 实时解析身份/workspace 并执行同 workspace guard。
 
 ## 启动 Agent
 
@@ -146,26 +146,32 @@ Herdr Link 不决定 Agent 应该做什么，也不调度工作、选择模型�
 
 ## 安装
 
-### Pi（原生扩展）
+### Pi（共享 stdio MCP server）
+
+Pi 使用内置 MCP 客户端，连接与 Claude Code、Codex、AGY 相同的 stdio server。保留 Pi 包管理器中的包登记，使 `pi update npm:herdr-link` 更新同一份安装；MCP server 直接从该安装目录启动，不使用 npx：
 
 ```bash
-pi install npm:herdr-link          # 全局（推荐）
-pi install -l npm:herdr-link        # 仅当前项目
-
-# 改用源码安装：
-pi install git:github.com/LZHcode1986/herdr-link
+pi install npm:herdr-link   # 尚未登记时执行
 ```
 
-手动/开发加载：
+最低支持 Pi `0.99.2`（MCP server `description` 支持）。在用户级 Pi MCP 配置中注册 server（`~/.pi/agent/mcp.json`；设置 `PI_CODING_AGENT_DIR` 时使用 `<agent-dir>/mcp.json`）：
 
-```bash
-mkdir -p ~/.pi/agent/extensions/herdr-link
-cp src/pi.ts ~/.pi/agent/extensions/herdr-link/index.ts
-cp src/herdr.ts src/protocol.ts ~/.pi/agent/extensions/herdr-link/
-# 或：pi --extension /path/to/herdr-link/src/pi.ts
+```json
+{
+  "mcpServers": {
+    "herdr_link": {
+      "command": "node",
+      "args": ["<agent-dir>/npm/node_modules/herdr-link/dist/herdr-link.mcp.js"],
+      "exposure": "codemode",
+      "description": "Only use Herdr Link when the user explicitly requests Herdr communication or when handling an inbound Herdr Link message."
+    }
+  }
+}
 ```
 
-安装后 Adapter 注册 `herdr_link` gateway 与四个 Tier 1 工具；每个 session 开始时 Tier 1 处于 inactive，模型调用 `herdr_link {}` 后启用并注入契约。
+`exposure: "codemode"` 不把 MCP 工具放进声明工具列表；模型通过 `searchTools()` 发现 gateway 与 Tier 1，使用 `tools.mcp__herdr_link__herdr_link({})` 激活，并通过 `mcp__herdr_link__*` namespace 调用 Tier 1。server 继承 Pi 进程的 `HERDR_*`。修改包或 MCP 配置后重启 Pi。
+
+Pi 不注入任何提示词文本，呈现方式刻意比其他 Host 更轻：dormant 阶段的触发条件来自 `mcp.json` 的 `description` 字段与 gateway 描述，激活后以共享 MCP 的工具描述为唯一契约来源。Claude Code、Codex、AGY 在启动时注入一段短 Tier-0 hint，OpenCode 注入按 session 的契约——Pi 两者都不做。PROTOCOL §3 把这定义为两档契约呈现之一——「描述式」（另一档为注入式），Pi 与其它 shared MCP Host 同属描述式。唯一保留的 Pi 扩展是极简 wait guard：在 Herdr managed pane 内拦截 `herdr agent wait` 与 `herdr agent prompt ... --wait` 两类 Bash 命令，不注册工具、不修改提示词。
 
 ### OpenCode（V1 / V2 独立 bundle）
 
@@ -198,7 +204,7 @@ V2 使用 `ctx.tool.transform` 注册 `herdr_link`，并通过 `ctx.session.hook
 
 ### Claude Code / Codex / AGY（共享 stdio MCP server）
 
-没有原生自定义工具注册面的 Runtime 共用同一个 stdio MCP server（不依赖 MCP SDK，配置使用 Node 原生 `JSON.parse`），以本包的 `bin` 发布：
+Claude Code、Codex、AGY 与 Pi 共用同一个 stdio MCP server（不依赖 MCP SDK，配置使用 Node 原生 `JSON.parse`），以本包的 `bin` 发布：
 
 ```bash
 npx -y herdr-link           # 在 stdio 上启动 MCP server
@@ -218,8 +224,8 @@ MCP 同样是惰性呈现：非 Herdr 环境 `tools/list` 返回空集；Herdr m
 | `HERDR_BIN_PATH` | 当前 Herdr binary 路径；失效时返回 `NOT_IN_HERDR` |
 | `HERDR_PANE_ID` | caller pane，用于实时解析 self identity 与权威 workspace |
 
-- 非 Herdr managed pane 中所有 Adapter 均为完全 no-op：Pi/OpenCode 不注册任何工具，MCP 返回空工具集；
-- Herdr 环境 dormant 态下，模型侧只有 `herdr_link` gateway 可见；
+- 非 Herdr managed pane 中不提供任何 Herdr 工具：Pi 扩展只注册 wait guard，OpenCode 不注册工具，MCP 返回空工具集。Pi 仍可能显示已配置的 MCP server 元数据；
+- Herdr 环境 dormant 态下，模型侧只有 `herdr_link` gateway 可用（Codemode Host 通过 `searchTools()` 发现）；
 - **Self identity bootstrap**（PROTOCOL.md §6.3）：用户手动启动、已被 Herdr 识别但尚无合法 Agent Name 的 agent，会被自动赋一个生成的 `hl-*` 名字（Adapter 启动时执行一次 `ensureSelfName()`，通信路径内另有 fallback）。已有名字绝不改写、不持久化；bootstrap 失败时 Link 以 `SELF_UNNAMED` 报错；
 - 运行期失败通过 Link error 返回（`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED` / `START_CONFIG_NOT_FOUND` / `START_AGENT_NOT_FOUND` / `START_CONFIG_INVALID` / `START_INPUT_INVALID` / `START_FAILED`）。
 
@@ -260,11 +266,11 @@ npm run check:opencode-bundles  # manifest、Runtime 标记、SHA-256、导入�
 PROTOCOL.md                  协议唯一规范（Envelope、两级能力面、Contract、工具语义、错误模型）
 src/protocol.ts              协议核心：类型、envelope/wrapper 构建、错误、COMMUNICATION_CONTRACT
 src/herdr.ts                 Herdr CLI 控制层：configured/explicit Agent start、JSON 配置解析、cursor、live identity/workspace 解析
-src/pi.ts                    Pi Runtime Adapter：gateway + deferred Tier 1（setActiveTools），激活后注入契约
+src/pi-wait-guard.ts          Pi 扩展：极简 Bash wait guard（不注册工具、不注入提示词）
 src/opencode.ts              OpenCode Runtime Adapter：single-gateway dispatcher + 按 sessionID 契约注入
 src/opencode-v2.ts           OpenCode 2 Runtime Adapter：ctx.tool.transform gateway、按 session 注入契约、会话级项目目录
 src/mcp.ts                   共享 stdio MCP server：JSON-RPC、惰性工具列表、gateway dispatch
-docs/mcp-wiring.md           Claude Code / Codex / AGY 注册与 Tier-0 hint 接线指南
+docs/mcp-wiring.md           Pi / Claude Code / Codex / AGY 注册与 Tier-0 hint 接线指南
 dist/*.js                    预构建 bundle（OpenCode V1/V2 插件、MCP server bin）
 dist/herdr-link.opencode.manifest.json 构建清单：各 bundle 的 Runtime、版本与 SHA-256
 scripts/mcp-probe.mjs        stdio 握手排障探针
@@ -273,7 +279,7 @@ scripts/build-opencode.mjs    OpenCode bundle 构建 + manifest 生成
 scripts/check-opencode-bundles.mjs  bundle/manifest/导入隔离检查
 ```
 
-分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线。activation 是各 Adapter 内存中的 session 局部状态：不持久化、不跨 session 恢复。
+分层原则：`protocol.ts` 零 Herdr IO；`herdr.ts` 只做 Herdr 控制面调用（`execFile` argv 数组，无 shell）；`pi-wait-guard.ts` / `opencode.ts` / `mcp.ts` 各自只做 Runtime 接线。OpenCode 与 MCP 的 activation 是内存中的 session 局部状态：不持久化、不跨 session 恢复。
 
 ## 范围与非目标
 

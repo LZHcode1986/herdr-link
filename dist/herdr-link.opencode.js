@@ -1,4 +1,4 @@
-/*! herdr-link bundle runtime=v1 version=0.6.0 */
+/*! herdr-link bundle runtime=v1 version=0.7.0 */
 
 // src/opencode.ts
 import { tool } from "@opencode-ai/plugin";

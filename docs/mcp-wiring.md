@@ -1,6 +1,6 @@
-# MCP Adapter 接线指南（Claude Code / Codex / AGY）
+# MCP Adapter 接线指南（Pi / Claude Code / Codex / AGY）
 
-适用对象：没有原生自定义工具注册面的 Runtime（Claude Code、Codex、AGY）。三者共用同一个 stdio MCP server（不依赖 MCP SDK，配置使用 Node 原生 `JSON.parse`）；契约注入不经 MCP 通道，按 Runtime 分治。
+适用对象：Pi 与 Claude Code、Codex、AGY 共用同一个 stdio MCP server（不依赖 MCP SDK，配置使用 Node 原生 `JSON.parse`）。Pi 使用内置 MCP Codemode；其余 Host 按各自机制接线。契约注入不经 MCP 通道，按 Runtime 分治。
 
 ## 形态总览
 
@@ -14,24 +14,29 @@ lazy 呈现                非 Herdr：tools/list = []
 listChanged fallback     不响应刷新的 Host 继续用 gateway 显式 action 分发：
                          {"action":"start","arguments":{...}} / {"action":"peers"} / {"action":"send","arguments":{...}} /
                          {"action":"close","arguments":{...}}
-呈现方式                  Claude Code / Codex = mcp__herdr_link__<tool>
+呈现方式                  Pi = Codemode searchTools/describeTool → mcp__herdr_link__<tool>
+                         Claude Code / Codex = mcp__herdr_link__<tool>
                          AGY   = call_mcp_tool(ServerName/ToolName/Arguments)
 错误语义                  十个 Link error 一律 isError:true + "CODE: detail" 文本（PROTOCOL §7）；
                          环境/transport 失败归类 NOT_IN_HERDR 且不被重包装
-零副作用                  非 Herdr 环境 tools/list 返回 []，模型无感知；stale host 注册表直接调用也返回 NOT_IN_HERDR
-契约/提示注入            dormant 启动只允许短 Tier-0 hint：
+零副作用                  非 Herdr 环境 tools/list 返回 []，stale host 注册表直接调用也返回 NOT_IN_HERDR；
+                         Pi 仍可能显示固定 mcp_servers metadata，但无工具、无 Contract
+契约/提示注入             PROTOCOL §3 两档：注入式（OpenCode 每 session 注入）与描述式（MCP 一族）；
+                         Pi 不注入 system prompt；通过共享 MCP descriptions + Codemode 搜索获得语义；
+                         dormant 启动只允许短 Tier-0 hint：
                          Claude Code = launcher --append-system-prompt-file；
                          Codex = SessionStart hook additionalContext；
                          AGY = PreInvocation ephemeralMessage hook（主通道）
                          完整 canonical Contract 不在启动阶段注入；激活后由 tools/list 的 active descriptions
-                         与 gateway fallback presentation 提供，且 active presentation 必须覆盖 §3 的旁路通信禁用规则。§1 的 builder 仅用于 active 状态的显式刷新，不用于 dormant 启动。
+                         与 gateway fallback presentation 提供，且 active presentation 必须覆盖 PROTOCOL §3 的旁路通信禁用规则。§1 的 builder 仅用于 active 状态的显式刷新，不用于 dormant 启动。
 ```
 
 ## 0. 构建 bundle
 
 ```bash
-# 方式 A（推荐）：npm 包，免 clone。下文所有 MCP 注册统一使用：
-#   command = "npx", args = ["-y", "herdr-link"]
+# 方式 A（推荐）：npm 包，免 clone。各 Host 的注册方式见对应小节：
+#   Claude Code / Codex / AGY: command = "npx", args = ["-y", "herdr-link"]
+#   Pi: command = "node", args = ["<agent-dir>/npm/node_modules/herdr-link/dist/herdr-link.mcp.js"]
 npm view herdr-link version
 
 # 方式 B：源码构建（开发/审计场景）；构建产物等价于 npm 包的 dist/
@@ -40,9 +45,9 @@ npm install && npm run build:mcp
 BUNDLE=$(pwd)/dist/herdr-link.mcp.js   # 后文统一引用
 ```
 
-运行只依赖 Node ≥ 22.6。server 由各 Runtime 在 Herdr managed pane 内拉起；**`HERDR_*` 环境变量是否透传给 MCP 子进程由各 Runtime 决定**——Codex 必须显式 `env_vars` 转发（§3），AGY 实测原生透传（§4），其余 Runtime 接入时先实测。
+运行只依赖 Node ≥ 22.6。server 由各 Runtime 在 Herdr managed pane 内拉起；**`HERDR_*` 环境变量是否透传给 MCP 子进程由各 Runtime 决定**——Pi 与 AGY 原生透传，Codex 必须显式 `env_vars` 转发（§4），其余 Runtime 接入时先实测。
 
-**命名约束**：三家 Runtime 的 host registration namespace 均使用 `herdr_link`（下划线；连字符名在 Codex code-mode 工具面有兼容性问题）。Claude Code / Codex 以 prefix 形式呈现、AGY 以 wrapper 形式呈现（PROTOCOL §4.6），契约附录分别由 `buildMcpPrefixedCommunicationContract("herdr_link")` 与 `buildMcpWrapperCommunicationContract("call_mcp_tool", "herdr_link")` 生成（见 §1.2 / §1.3）。
+**命名约束**：所有 MCP Host 的 host registration namespace 均使用 `herdr_link`（下划线；连字符名在 Codex code-mode 工具面有兼容性问题）。Pi 通过 Codemode 使用 `mcp__herdr_link__<tool>`；Claude Code / Codex 以 prefix 形式呈现、AGY 以 wrapper 形式呈现（PROTOCOL §4.6），契约附录分别由 `buildMcpPrefixedCommunicationContract("herdr_link")` 与 `buildMcpWrapperCommunicationContract("call_mcp_tool", "herdr_link")` 生成（见 §1.2 / §1.3）。Pi 不使用这些 builder。
 
 ## 1. Active-state Contract 文本（canonical compact 共享 + Runtime presentation 附录）
 
@@ -99,7 +104,49 @@ Use:
 
 两个生成函数的参数均**无默认值**——serverInfo.name（`herdr-link`）与 host tool namespace（`herdr_link`）是两个概念，调用方必须显式声明。
 
-## 2. Claude Code（launcher + shared MCP）
+## 2. Pi（shared MCP + Codemode）
+
+Pi 0.99.2 或更高版本内置 MCP 客户端。使用 Pi 包管理器安装和升级，MCP server 直接从 Pi 管理的安装目录启动，不使用 npx：
+
+```bash
+pi install npm:herdr-link          # 尚未登记时执行
+```
+
+用户级配置文件为 `~/.pi/agent/mcp.json`；设置 `PI_CODING_AGENT_DIR` 时使用 `<agent-dir>/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "herdr_link": {
+      "command": "node",
+      "args": ["<agent-dir>/npm/node_modules/herdr-link/dist/herdr-link.mcp.js"],
+      "exposure": "codemode",
+      "description": "Only use Herdr Link when the user explicitly requests Herdr communication or when handling an inbound Herdr Link message."
+    }
+  }
+}
+```
+
+要点：
+
+- `exposure` 必须是 `codemode`：MCP 工具不进入模型声明工具列表，Codemode 负责搜索和调用。
+- `description` 是固定使用触发条件，不包含 Contract；非 Herdr 环境下 Pi 可能显示该 server metadata，但 `tools/list` 仍为空。
+- `HERDR_ENV` / `HERDR_BIN_PATH` / `HERDR_PANE_ID` 由 Pi 的 stdio 子进程继承，无需像 Codex 那样显式 `env_vars`。
+- 最低 Pi `0.99.2`（`description` 支持）；当前验证基线为 `1.5.0`。
+- 修改包或 MCP 配置后重启 Pi；升级使用 `pi update npm:herdr-link`。
+
+Codemode 调用顺序：
+
+```js
+searchTools("herdr_link");
+tools.mcp__herdr_link__herdr_link({});
+searchTools("herdr_link_send");
+tools.mcp__herdr_link__herdr_link_send({ to: "<Agent Name>", message: "<message>" });
+```
+
+Pi 不注入任何提示词文本，因此契约呈现刻意比其他 Host 更轻：dormant 触发条件来自 `mcp.json` 的 `description` 与 gateway 描述，激活后以共享 MCP 的工具描述为唯一契约来源。Claude Code / Codex / AGY 在启动时注入短 Tier-0 hint（§3–§5），OpenCode 注入按 session 的 Contract；Pi 两者都不做——按 PROTOCOL §3 的两档划分，Pi 采用最轻的「描述式」（连 Tier-0 hint 也不注入），Claude Code / Codex / AGY 同为描述式但带启动 hint，OpenCode 为注入式。唯一的 Pi 扩展是极简 wait guard：在 Herdr managed pane 内拦截 `herdr agent wait` 与 `herdr agent prompt ... --wait` 两类 Bash 命令，不注册工具、不修改提示词。它不依赖 MCP 的 dormant/active 状态。
+
+## 3. Claude Code（launcher + shared MCP）
 
 > **状态：VALIDATED（开发与验证已完成）**——CC 2.1.241 已在独立 Herdr tab 的新 pane 中完成 MCP handshake、工具呈现、Contract launcher 注入及 model-facing `peers → send` 任务闭环；lazy activation 呈现与 model-facing error path（`PEER_NOT_FOUND` isError 透传）亦已实测通过。共享 MCP server 无需 CC 专属代码。
 > **命名约束**：CC 的 MCP server key 必须使用 `herdr_link`（下划线）；模型呈现为 `mcp__herdr_link__<canonical>`。`serverInfo.name` 仍为 `herdr-link`，两者不可混用。allowlist 使用 `mcp__herdr_link__*`。
@@ -138,7 +185,7 @@ herdr agent start <name> --kind claude --pane <pane_id> -- \
 - launcher 只追加上面的短 Tier-0 hint；dormant 阶段不得追加完整 Contract。激活后以 `tools/list` 刷新得到的 Tier 1 descriptions 为权威；
 - 不要再叠加 SessionStart/UserPromptSubmit hook 或 CLAUDE.md 注入完整 Contract（去重与 dormant 零成本原则）。
 
-## 3. Codex
+## 4. Codex
 
 `~/.codex/config.toml` 注册（stdio 无需实验开关）。**`env_vars` 转发必须配置**：codex 默认不过滤但也不透传 `HERDR_*` 给 MCP 子进程，缺失时本 server 的零副作用门控会判定「非 Herdr」而返回空工具集（2026-08-23 实测确认）；server 名须用下划线 `herdr_link`——连字符名在 code-mode 工具面存在兼容性问题：
 
@@ -180,7 +227,7 @@ SessionStart hook 只注入短 Tier-0 hint（需 `[features] hooks = true`），
 printf '%s\n' 'Herdr Link gateway: activate only when the user explicitly asks to use Herdr or when handling an inbound Herdr Link message.'
 ```
 
-## 4. AGY
+## 5. AGY
 
 注册 MCP server（全局 `~/.gemini/config/mcp_config.json`，或插件级 `plugins/herdr-link/mcp_config.json`）：
 
@@ -227,7 +274,7 @@ HINT='Herdr Link gateway: use the MCP wrapper with ServerName="herdr_link" and T
 node -e 'process.stdout.write(JSON.stringify({ injectSteps: [{ ephemeralMessage: process.argv[1] }] }))' "$HINT"
 ```
 
-## 5. 验证（冒烟四件套）
+## 6. 验证（冒烟四件套）
 
 单元与集成测试（含 spawn 真 stdio 的套件：空门控 / lazy list / 契约呈现名 / isError 透传）：
 
@@ -254,7 +301,9 @@ printf '%s\n%s\n%s\n%s\n' \
 
 预期：`initialize` 结果含 `"capabilities":{"tools":{"listChanged":true}}`；dormant list 仅 `herdr_link`；激活调用返回 `{"status":"active",...}` 且 stdout 在其后出现一行 `"method":"notifications/tools/list_changed"`；再次 `tools/list` 含 gateway + 四个 canonical 工具。对不存在的 peer 调用 `herdr_link_send`（或 gateway action 分发等价形式）应得到 `"isError":true` 且文本以 `PEER_NOT_FOUND:` 开头；跨 workspace 目标同样表现为 `PEER_NOT_FOUND`，不得泄漏目标存在于其他 workspace。
 
-## 6. 行为边界（与 PROTOCOL.md 一致）
+Pi 真机冒烟（在 Herdr managed pane 内）：`pi mcp list` 应显示 `herdr_link`；Codemode 中 `searchTools("herdr_link")` 找到 gateway，`tools.mcp__herdr_link__herdr_link({})` 激活后 `searchTools("herdr_link_send")` 找到 Tier 1，并成功 send 一条测试消息。普通 shell 中同一 server 的 `tools/list` 必须为 `[]`。Pi 的 wait guard 只拦截 `herdr agent wait` 与 `herdr agent prompt ... --wait`，普通 Bash 不受影响。
+
+## 7. 行为边界（与 PROTOCOL.md 一致）
 
 - 工具失败是本地 tool failure：`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED` / `START_CONFIG_NOT_FOUND` / `START_AGENT_NOT_FOUND` / `START_CONFIG_INVALID` / `START_INPUT_INVALID` / `START_FAILED`，一律 `isError:true` 文本返回，进程不崩溃、不自动重试、不 fallback；
 - activation 是本 stdio 连接内的内存状态：连接断开即回到 dormant，不持久化、不跨连接共享；JSON-RPC 保留错误码（-32700 等）只用于 transport 层，Link 错误码永不映射其上；
@@ -262,15 +311,15 @@ printf '%s\n%s\n%s\n%s\n' \
 - server 启动时执行一次 `ensureSelfName()`（fire-and-forget，失败静默、稍后以 `SELF_UNNAMED` 呈现）：手动启动且未命名的 agent 无需人工 rename 即可成为可发现 peer；
 - 不提供业务调度、Agent 创建/回收、workspace/topology 控制等任何 Non-goals 能力；`herdr_link_start` 只执行调用方明确的 configured/explicit 启动选择；worker 生命周期其余部分仍由调用方决定；正常协作不依赖外部 `AGENTS.md` / Skill 补充 Contract。
 
-## 7. 已知坑（Codex/AGY 真机实测）
+## 8. 已知坑（Codex/AGY 真机实测）
 
 | # | 现象 | 根因 | 处理 |
 |---|---|---|---|
-| 1 | Codex 下工具"可见但调用报 `tools.mcp__… is not a function`"，或 tools/list 悄悄返回空集 | codex 不透传 `HERDR_*` 给 MCP 子进程，门控判定非 Herdr → 空工具集 | config.toml 配 `env_vars = ["HERDR_ENV","HERDR_BIN_PATH","HERDR_PANE_ID","HERDR_SOCKET_PATH"]`（§3） |
+| 1 | Codex 下工具"可见但调用报 `tools.mcp__… is not a function`"，或 tools/list 悄悄返回空集 | codex 不透传 `HERDR_*` 给 MCP 子进程，门控判定非 Herdr → 空工具集 | config.toml 配 `env_vars = ["HERDR_ENV","HERDR_BIN_PATH","HERDR_PANE_ID","HERDR_SOCKET_PATH"]`（§4） |
 | 2 | Codex 首次加载 hook / MCP server 无效果 | 新 hook 与 MCP server 均需 review 批准 | 在 TUI 中批准；`config.toml` 会落盘 `[hooks.state] trusted_hash`；MCP 配置变更后必须**完全重启** codex 实例（老实例不会重连） |
 | 3 | 排障时确认 MCP 握手是否发生 | codex 的 sqlite 日志难以定位 stdio 流量 | 把 config 指向 `scripts/mcp-probe.mjs`（双向 tee 到 `/tmp/mcp-probe.log`）抓原始 JSON-RPC |
 | 4 | Herdr pane 内进程存活但 agent 名登记丢失（`agent_pane_busy` / `SELF_UNNAMED`） | Herdr watcher 对 stale pgid 的误清名（同 OpenCode 重启丢名问题） | 运维恢复：`herdr agent rename <pane_id> <name>` |
 | 5 | AGY hooks.json 写顶层 `"PreInvocation"` 不生效 | AGY 格式为按集成名分组：`{"<name>": {"PreInvocation": [...]}}`，多组同名事件顺序合并 | 用独立组名（如 `"herdr-link"`），与 herdr 官方集成组并存 |
 | 6 | Host 对 `notifications/tools/list_changed` 不重新拉取 `tools/list` | 各 Host 刷新行为不一（工程确认项） | 保持 gateway 显式 action 分发（§总览 fallback 行）；canonical 语义不变 |
 
-E2E 记录：Codex TUI 与 AGY 曾各自完成 peers → send → brain 收 envelope 全闭环、`PEER_NOT_FOUND` isError 文本透传一致、`herdr_link_close` 返回 `{status:"closed",agent}`——**该记录取证于常驻三工具呈现时代**；lazy activation 呈现（dormant 单工具、listChanged、gateway dispatch）尚未有同等真机记录，发布前须按 §5 重跑。
+E2E 记录：Codex TUI 与 AGY 曾各自完成 peers → send → brain 收 envelope 全闭环、`PEER_NOT_FOUND` isError 文本透传一致、`herdr_link_close` 返回 `{status:"closed",agent}`——**该记录取证于常驻三工具呈现时代**；lazy activation 呈现（dormant 单工具、listChanged、gateway dispatch）尚未有同等真机记录，发布前须按 §6 重跑。

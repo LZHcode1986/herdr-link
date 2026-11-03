@@ -64,9 +64,14 @@ herdr-link/1
 Herdr Link 的模型可见面分两个状态：
 
 - **Dormant**（默认）：Adapter 已注册但未激活。模型侧只呈现极小的 Tier 0 gateway（§4.1）；**不注入任何 Communication Contract**，不呈现 Tier 1 工具的完整 schema/description。
-- **Active**：Tier 0 gateway 被调用后（触发条件见 §6.2），Adapter 使本 runtime session 对模型呈现语义等价的 Active Contract，并使 start/peers/send/close 对模型可用；激活在本 runtime session 内保持，直到 session 结束。
+- **Active**：Tier 0 gateway 被调用后（触发条件见 §6.2），Adapter 使本 runtime session 对模型呈现 Active Contract 面（档位见下），并使 start/peers/send/close 对模型可用；激活在本 runtime session 内保持，直到 session 结束。
 
-Active 状态下，所有 Runtime Adapter 必须使本节规则的语义对 Agent 完整可见并暴露 §4 定义的能力。可通过 system-prompt injection、active tool schema/description、gateway presentation 或这些机制的组合实现；Active Contract 与工具 schema/description 共同构成完整且唯一的 Agent-facing 使用权威。符合规范的部署不得依赖外部 `AGENTS.md`、Skill、手工 prompt 或 Herdr CLI 指令补全正常通信知识。允许根据 Runtime 的呈现机制调整表现形式（例如 gateway dispatch 形态可将同名规则表达为对 `herdr_link` action 的说明），但以下规则不可改变：
+Active 状态下，所有 Runtime Adapter 必须暴露 §4 定义的能力，并保证其模型可见文本不与本节规则矛盾。呈现分两档，Adapter 任选其一并在其 Runtime 内保持一致：
+
+- **注入式**：通过 system-prompt injection、Runtime hook 或 session context 注入下面的 canonical 文本（如 OpenCode 每 session 注入一次）；
+- **描述式**：不注入 canonical 文本，模型从 Tier 1 工具描述与 active gateway 描述读取语义（shared MCP 一族：Pi / Claude Code / Codex / AGY）。此档以更小的常驻成本换取更少的显式规则，属于有意取舍。
+
+两档都不得依赖外部 `AGENTS.md`、Skill、手工 prompt 或 Herdr CLI 指令补全正常通信知识。下列文本是 canonical 语义基准——注入式档位的注入内容，也是所有档位的一致性检查依据；允许根据 Runtime 的呈现机制调整表现形式（例如 gateway dispatch 形态可将同名规则表达为对 `herdr_link` action 的说明），但规则本身不可改变：
 
 ```text
 Herdr Link is the agent channel for the current Herdr workspace.
@@ -162,7 +167,8 @@ Herdr Link is the agent channel for the current Herdr workspace.
 
 - Canonical 名固定为 Tier 0 `herdr_link` 与 Tier 1 `herdr_link_start` / `herdr_link_peers` / `herdr_link_send` / `herdr_link_close`；
 - Runtime 可因宿主机制以不同形态呈现：
-  - **true deferred tools**：四个工具均为独立注册工具，dormant 时仅 gateway 在模型可见集合中，激活后 Tier 1 进入可见集合（如 Pi 的动态工具 API）；
+  - **true deferred tools**：四个工具均为独立注册工具，dormant 时仅 gateway 在模型可见集合中，激活后 Tier 1 进入可见集合（宿主动态工具 API）；
+  - **MCP Codemode**（如 Pi）：模型声明工具面不直接列出 MCP 工具；Codemode 通过 `searchTools` / `describeTool` 发现 gateway 与 Tier 1，呈现名为 `mcp__<namespace>__<tool>`，activation 仍通过 gateway；
   - **prefix 型独立工具**（如 MCP 宿主的 `mcp__<namespace>__<tool>`）：呈现名的结尾必须是完整 canonical 名；
   - **wrapper 形式**（如 AGY 的 `ServerName`/`ToolName` 参数化调用）：`ToolName` 即 canonical 名；
   - **single-gateway dispatch**：模型面只有 `herdr_link` 一个工具，Tier 1 能力以 `action` 参数分发；此时 active presentation 必须把 §3 规则完整映射到 gateway action 上；
@@ -188,16 +194,16 @@ Herdr Link is the agent channel for the current Herdr workspace.
 
 1. **Activate**：提供 `herdr_link` gateway 等价能力（§4.1）；
 2. **Start**：提供 `herdr_link_start` 等价能力（§4.2），只执行调用方明确提交的 configured 或 explicit start；
-3. **Expose Active Contract Semantics**：active 后让模型完整知道本协议第 3 节的规则；允许通过 system-prompt injection、active tool schema/description、gateway presentation 或组合实现；dormant 时必须**不**暴露 Tier 1 Contract 语义；
+3. **Expose Active Contract Semantics**：active 后让模型能正确使用 Tier 1 能力——注入式档位注入 §3 的 canonical 文本，描述式档位以 active tool schema/description 与 gateway presentation 表达同一语义；两档都不得与 §3 规则矛盾；dormant 时必须**不**暴露 Tier 1 Contract 语义；
 4. **Expose Peers / Send**：提供 `herdr_link_peers`、`herdr_link_send`（包括普通回复）等价能力；
 5. **Expose Close**：提供 `herdr_link_close` 等价能力。
 
 “同一 Runtime Adapter”指一个可独立安装和验证的 Runtime-specific 交付单元；它可以由多个宿主接线点组成（例如 MCP tools + Runtime hook），但不得把外部 Agent 指令文件或操作者维护的 Contract 副本当作第五项依赖。
 
 Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool system 实现；不强制实现语言。Link 不创建统一 Adapter Framework（无 BaseAdapter / registry / plugin loader / daemon）。工具命名呈现须符合 §4.6。已知的合规呈现形态：
-- **true deferred tools**（如 Pi）：四工具全部注册，`session_start` 时把 Tier 1 移出 active 集合，gateway 以加性方式启用 Tier 1；close 保持 sequential 以避免 sibling-call 竞态（execution safety，不定义 send-before-close workflow）；
+- **true deferred tools**（宿主提供动态工具 API）：四工具全部注册，`session_start` 时把 Tier 1 移出 active 集合，gateway 以加性方式启用 Tier 1；close 保持 sequential 以避免 sibling-call 竞态（execution safety，不定义 send-before-close workflow）；
 - **single-gateway dispatch**（宿主无公开的动态启停 API 时，如 OpenCode）：模型面常驻且仅有一个极小 `herdr_link` dispatcher，空参调用幂等激活本 session，随后以 `action: start|peers|send|close` 分发到同一控制层；Active Contract semantics 仅在已激活 session 暴露；
-- **shared MCP：listChanged 优先 + gateway fallback**（Claude Code / Codex / AGY 等）：dormant `tools/list` 只返回 gateway；声明 `tools.listChanged` capability，激活时发射一次 `notifications/tools/list_changed`；active `tools/list` 返回 gateway + Tier 1；不响应刷新的 Host 通过 gateway 显式 action 分发保持全功能。MCP activation 按 stdio 连接（即宿主为本 session 拉起的 server 进程）记忆，连接结束即回到 dormant。
+- **shared MCP：listChanged 优先 + gateway fallback**（Pi / Claude Code / Codex / AGY 等）：dormant `tools/list` 只返回 gateway；声明 `tools.listChanged` capability，激活时发射一次 `notifications/tools/list_changed`；active `tools/list` 返回 gateway + Tier 1；不响应刷新的 Host 通过 gateway 显式 action 分发保持全功能。MCP activation 按 stdio 连接（即宿主为本 session 拉起的 server 进程）记忆，连接结束即回到 dormant。Pi 使用 Codemode 呈现：模型通过 `searchTools` / `describeTool` 发现工具，不把 MCP 工具加入声明工具列表。
 
 ### 6.1 环境门控（Environment Gate）
 
@@ -206,7 +212,7 @@ Adapter 可通过 Extension、Hook、Plugin、MCP Tool 或 Runtime 原生 tool s
 
 ### 6.2 Activation 与 Communication Readiness
 
-- **Dormant 为默认态**。满足环境门控后，模型侧只看到 gateway；不注入 Contract、不呈现 Tier 1 完整 schema、不加载官方 Herdr Skill、不产生后台轮询/监听。
+- **Dormant 为默认态**。满足环境门控后，模型侧只看到 gateway；不注入 Contract、不呈现 Tier 1 完整 schema、不加载官方 Herdr Skill、不产生后台轮询/监听。Codemode 呈现中，模型通过 `searchTools` 发现 gateway；这不改变 dormant 的 Contract 约束。
 - **激活触发仅有两个**：用户显式要求使用 Herdr（explicit Herdr intent），或收到一条 self-describing 的 inbound `herdr-link/1` 投递（§2）。两者都表现为模型调用 gateway；inbound 触发不要求宿主具备 prompt 拦截能力——wrapper 文本本身引导模型调用 gateway。
 - **Once-per-runtime-session**：激活后在当前 runtime session 内保持 active，不因后续用户消息不再提及 Herdr 而回退；新 runtime session 重新从 dormant 开始。activation 是内存中的 session 局部状态，不持久化、不写文件、不进 DB。
 - **Communication readiness**：已激活的当前 pane occupant 还必须拥有合法、稳定的 live Agent Name，才能作为 Envelope 的 `from` 使用 `herdr_link_peers` / `herdr_link_send`。
@@ -253,7 +259,7 @@ Link 定义最小错误语义，全部是本地 tool operation failure，不是�
 - `tab create` / `pane split` 只能由 canonical `herdr_link_start` 内部的 Link-managed placement 流程进入；`tab close` 只用于 failed-start rollback 关闭本次刚创建的 exact tab，不提供通用 tab 管理。
 - raw tab/pane/workspace ID 不进入 model-facing 输入或 receipt；只存在于 Link 内部 allocation 层与 Herdr CLI adapter 内部。
 - `agent prompt` 的投递文本是 §2 定义的 self-describing inbound wrapper；除此之外不构造任何额外协议负载。
-- 不使用 `--wait`（无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、任何 workspace 控制命令。（Pi 上，激活的 Link session 还会在 model Bash tool 边界 hard-block raw `herdr agent wait` 与 `herdr agent prompt ... --wait`。）
+- 不使用 `--wait`（无订阅、无等待语义）。不调用：`agent.wait`、`agent.read`、`pane.read`、`events.subscribe`、`pane.send_text`、`pane.send_keys`、任何 workspace 控制命令。（Pi 上，极简 wait guard 在 Herdr managed pane 的 Bash 工具边界拦截 raw `herdr agent wait` 与 `herdr agent prompt ... --wait`；它不依赖 Link 的 dormant/active 状态。）
 - `agent rename` 仅限 §6.3 self identity bootstrap 使用：目标只能是当前 pane 中未命名的 live occupant；禁止将其暴露为模型工具、用于任何其他 pane/agent 目标，或在面向模型的文本中提示该动作。
 
 ## 9. Non-goals

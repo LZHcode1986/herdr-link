@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-04
+
+### Changed
+
+- **Pi moves to the shared MCP server.** Pi no longer loads the native communication extension; it connects to the same stdio MCP server as Claude Code, Codex, and AGY through Pi's built-in MCP support with `exposure: "codemode"`. `pi install npm:herdr-link` (or the existing package registration) still manages the package, and `pi update npm:herdr-link` upgrades it.
+- Minimum supported Pi version is `0.99.2` (MCP `description` support); the verified baseline is Pi `1.5.0`.
+- Pi no longer injects the old extension-only Communication Contract, and it injects no prompt text at all. Pi's presentation is deliberately lighter than the other hosts: while dormant the trigger condition comes from the `description` field in `mcp.json` plus the gateway description, and after activation the shared MCP tool descriptions are the only contract source. Claude Code, Codex, and AGY append a short Tier-0 hint at startup and OpenCode injects the per-session contract; Pi does neither. PROTOCOL §3 classifies this as the description-based grade.
+- `PROTOCOL.md` §3 now defines two contract-presentation grades — **injected** (the full canonical text, e.g. OpenCode) and **description-based** (active tool descriptions + gateway presentation, the shared MCP hosts) — instead of requiring every adapter to surface the full canonical text; §6 item 3 follows the same split. No runtime behavior, tool text, or token cost changed.
+- The remaining Pi extension is a minimal Bash wait guard (`src/pi-wait-guard.ts`). It blocks `herdr agent wait` and `herdr agent prompt ... --wait` in any Herdr-managed pane when the Link channel is dormant or active; it registers no tools, changes no active tool set, and injects no prompt text.
+- `pi-package` keyword and the TypeBox dependency were removed; Pi SDK remains a peer/dev dependency.
+- Version manifests (`package.json`, `package-lock.json`, `herdr-plugin.toml`, `src/mcp.ts`, MCP bundle, OpenCode bundles and manifest) unified at `0.7.0`.
+
+
 ## [0.6.0] - 2026-10-19
 
 ### Added

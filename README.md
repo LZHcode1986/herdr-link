@@ -9,7 +9,7 @@
 
 Herdr Link is an on-demand cross-agent interoperability layer running inside Herdr sessions. Agents in the same workspace can start an explicitly requested Agent, discover each other, exchange protocol-typed messages, and close finished panes — via a **lazy gateway** exposing **four core operations**, with **zero learning overhead**.
 
-Adapters are provided for Pi (native extension), OpenCode (plugin bundle), and any MCP-capable runtime such as Claude Code, Codex, or AGY (shared stdio MCP server). The wire format is the `herdr-link/1` protocol, specified canonically in [`PROTOCOL.md`](./PROTOCOL.md).
+Adapters are provided for OpenCode (plugin bundle) and for Pi, Claude Code, Codex, and AGY through one shared stdio MCP server. The wire format is the `herdr-link/1` protocol, specified canonically in [`PROTOCOL.md`](./PROTOCOL.md).
 
 ## Why Herdr Link?
 
@@ -19,7 +19,7 @@ The usual way to teach agents cross-agent messaging is to point them at the offi
 - that reasoning **consumes tokens and adds latency on every use**;
 - usage knowledge is **re-derived by the model** instead of being given to it.
 
-Herdr Link removes that step entirely. The adapter hands the model four core operations behind a lazy gateway and injects a compact communication contract automatically:
+Herdr Link removes that step entirely. The adapter hands the model four core operations behind a lazy gateway and exposes a compact communication contract on activation:
 
 | | Official Herdr Skill route | With Herdr Link |
 |---|---|---|
@@ -30,13 +30,13 @@ Herdr Link removes that step entirely. The adapter hands the model four core ope
 
 In short:
 
-- **Fewer tokens.** Nothing to read or figure out. While dormant, the model sees only a tiny `herdr_link` gateway — no contract, no schemas. After activation it gets one short contract, not a manual.
+- **Fewer tokens.** Nothing to read or figure out. While dormant, the model sees only a tiny `herdr_link` gateway — no contract, no schemas. After activation it gets the compact contract surface, not a manual.
 - **Faster control.** Start an Agent, discover peers, send a protocol-typed message, or close a pane with a direct tool call — no multi-step CLI orchestration in between.
 - **Effortless ("zero-reasoning") integration.** Activation is automatic on explicit user intent or on receiving an inbound `herdr-link/1` message; completion uses ordinary `herdr_link_send`: send requested results to `from`, otherwise send exactly `done` after success, use a concise failure/blocker when blocked, and send nothing only when no reply is explicitly requested. `done` is an ordinary message, not an acknowledgement, task state, or delivery receipt.
 
 ## How it works
 
-Every runtime exposes the same lazy two-tier surface:
+Every runtime exposes the same lazy two-tier capability surface:
 
 ```text
 Agent A → herdr_link {}                    # activate (idempotent)
@@ -49,8 +49,8 @@ Agent B → herdr_link_send(to="A", message="result or done")
 Anyone  → herdr_link_close(agent="worker-a")   # caller-owned decision; a standalone later tool step
 ```
 
-- **Dormant tier:** only the `herdr_link` gateway is visible; calling it with `{}` activates the session once (idempotent, in-memory only).
-- **Active tier:** `herdr_link_start`, `herdr_link_peers`, `herdr_link_send`, `herdr_link_close`, plus the compact Communication Contract. Every communication call re-resolves live identity/workspace via Herdr and enforces a same-workspace guard.
+- **Dormant tier:** only the `herdr_link` gateway is available; Codemode hosts discover it with `searchTools()`. Calling it with `{}` activates the session once (idempotent, in-memory only).
+- **Active tier:** `herdr_link_start`, `herdr_link_peers`, `herdr_link_send`, and `herdr_link_close`, plus the active contract surface. Every communication call re-resolves live identity/workspace via Herdr and enforces a same-workspace guard.
 
 ## Starting Agents
 
@@ -157,26 +157,32 @@ herdr plugin action invoke herdr-link.doctor   # env, self identity, same-worksp
 The plugin action is read-only diagnostics; the Agent-facing protocol surface ships separately per runtime below.
 
 
-### Pi (native extension)
+### Pi (shared stdio MCP server)
+
+Pi uses its built-in MCP client with the same stdio server as Claude Code, Codex, and AGY. Keep the package registered with the Pi package manager so `pi update npm:herdr-link` upgrades the same installation; the MCP server starts directly from that installation (no npx):
 
 ```bash
-pi install npm:herdr-link          # global (recommended)
-pi install -l npm:herdr-link        # project-local
-
-# from source instead:
-pi install git:github.com/LZHcode1986/herdr-link
+pi install npm:herdr-link   # if not already registered
 ```
 
-Manual/dev loading:
+Pi 0.99.2 or newer is required (MCP server `description` support). Add the server to the user-level Pi MCP config (`~/.pi/agent/mcp.json`, or `<agent-dir>/mcp.json` when `PI_CODING_AGENT_DIR` is set):
 
-```bash
-mkdir -p ~/.pi/agent/extensions/herdr-link
-cp src/pi.ts ~/.pi/agent/extensions/herdr-link/index.ts
-cp src/herdr.ts src/protocol.ts ~/.pi/agent/extensions/herdr-link/
-# or: pi --extension /path/to/herdr-link/src/pi.ts
+```json
+{
+  "mcpServers": {
+    "herdr_link": {
+      "command": "node",
+      "args": ["<agent-dir>/npm/node_modules/herdr-link/dist/herdr-link.mcp.js"],
+      "exposure": "codemode",
+      "description": "Only use Herdr Link when the user explicitly requests Herdr communication or when handling an inbound Herdr Link message."
+    }
+  }
+}
 ```
 
-After installation the adapter registers the `herdr_link` gateway plus the four Tier 1 tools; Tier 1 starts inactive each session and is enabled (with contract injection) when the model calls `herdr_link {}`.
+`exposure: "codemode"` keeps MCP tools out of the declared tool list; the model discovers the gateway and Tier 1 tools with `searchTools()`, activates with `tools.mcp__herdr_link__herdr_link({})`, and calls Tier 1 through the `mcp__herdr_link__*` namespace. The server inherits `HERDR_*` from the Pi process. Restart Pi after changing the package or MCP config.
+
+Pi injects no prompt text of its own, which is deliberately lighter than the other hosts: while dormant the trigger condition comes from the `description` field in `mcp.json` plus the gateway description, and after activation the shared MCP tool descriptions are the only contract source. Claude Code, Codex, and AGY append a short Tier-0 hint at startup, and OpenCode injects the per-session contract — Pi does neither. PROTOCOL §3 records this as one of two contract-presentation grades — injected and description-based — and Pi, like the other shared MCP hosts, uses the description-based grade. The only remaining Pi extension is the minimal wait guard, which blocks raw `herdr agent wait` and `herdr agent prompt ... --wait` Bash commands in a Herdr-managed pane; it registers no tools and changes no prompt.
 
 ### OpenCode (V1 / V2 runtime bundles)
 
@@ -209,7 +215,7 @@ The V2 adapter registers the single `herdr_link` gateway through `ctx.tool.trans
 
 ### Claude Code / Codex / AGY (shared stdio MCP server)
 
-Runtimes without a native custom-tool API all share the same stdio MCP server (no MCP SDK dependency; configuration uses Node's built-in `JSON.parse`), published as this package's `bin`:
+Claude Code, Codex, and AGY use the same stdio MCP server as Pi (no MCP SDK dependency; configuration uses Node's built-in `JSON.parse`), published as this package's `bin`:
 
 ```bash
 npx -y herdr-link           # starts the MCP server on stdio
@@ -229,8 +235,8 @@ The runtime process must be started by Herdr in a managed pane:
 | `HERDR_BIN_PATH` | Current Herdr binary path; invalid → `NOT_IN_HERDR` |
 | `HERDR_PANE_ID` | Caller pane, used to resolve self identity and authoritative workspace |
 
-- Outside a Herdr pane every adapter is a complete no-op: Pi/OpenCode register nothing, MCP returns an empty tool list.
-- In a Herdr pane while dormant, only the `herdr_link` gateway is visible to the model.
+- Outside a Herdr pane no Herdr tools are available: the Pi extension registers only its wait guard, OpenCode registers nothing, and MCP returns an empty tool list. Pi may still show the configured MCP server metadata.
+- In a Herdr pane while dormant, only the `herdr_link` gateway is available to the model (Codemode hosts discover it with `searchTools()`).
 - **Self identity bootstrap** (PROTOCOL.md §6.3): a manually started agent that is recognized by Herdr but has no valid Agent Name is named automatically with a generated `hl-*` name (`ensureSelfName()` at adapter startup plus a fallback inside every communication path). Existing names are never rewritten, nothing is persisted; if the bootstrap fails the Link errors with `SELF_UNNAMED`.
 - Runtime failures come back as Link errors (`NOT_IN_HERDR` / `SELF_UNNAMED` / `PEER_NOT_FOUND` / `SEND_FAILED` / `CLOSE_FAILED` / `START_CONFIG_NOT_FOUND` / `START_AGENT_NOT_FOUND` / `START_CONFIG_INVALID` / `START_INPUT_INVALID` / `START_FAILED`).
 
@@ -271,11 +277,11 @@ Layout:
 PROTOCOL.md                  canonical protocol spec (envelope, tiers, contract, semantics, errors)
 src/protocol.ts              protocol core: types, envelope/wrapper builders, errors, COMMUNICATION_CONTRACT
 src/herdr.ts                 Herdr CLI control layer: configured/explicit Agent start, JSON config parsing, cursor, live identity/workspace resolution
-src/pi.ts                    Pi adapter: gateway + deferred Tier 1 (setActiveTools), post-activation contract injection
+src/pi-wait-guard.ts          Pi extension: minimal Bash wait guard (no tools, no prompt injection)
 src/opencode.ts              OpenCode adapter: single-gateway dispatcher + per-sessionID contract injection
 src/opencode-v2.ts           OpenCode 2 adapter: ctx.tool.transform gateway, per-session context hook, session-scoped project directory
 src/mcp.ts                   shared stdio MCP server: JSON-RPC, lazy tool list, gateway dispatch
-docs/mcp-wiring.md           registration & Tier-0 hint wiring for Claude Code / Codex / AGY
+docs/mcp-wiring.md           registration & Tier-0 hint wiring for Pi / Claude Code / Codex / AGY
 dist/*.js                    prebuilt bundles (OpenCode V1/V2 plugin, MCP server bin)
 dist/herdr-link.opencode.manifest.json  build manifest: runtime, version, SHA-256 per bundle
 scripts/mcp-probe.mjs        stdio handshake debugging probe
@@ -284,7 +290,7 @@ scripts/build-opencode.mjs    OpenCode bundle build + manifest generation
 scripts/check-opencode-bundles.mjs  bundle/manifest/import-isolation checks
 ```
 
-Layering rule: `protocol.ts` has zero Herdr IO; `herdr.ts` only drives the Herdr control plane (`execFile` argv arrays, no shell); `pi.ts` / `opencode.ts` / `mcp.ts` only do runtime wiring. Activation state lives in memory per runtime session: never persisted, never restored across sessions.
+Layering rule: `protocol.ts` has zero Herdr IO; `herdr.ts` only drives the Herdr control plane (`execFile` argv arrays, no shell); `pi-wait-guard.ts` / `opencode.ts` / `mcp.ts` only do runtime wiring. Activation state for OpenCode and MCP lives in memory per runtime session: never persisted, never restored across sessions.
 
 ## Scope and non-goals
 
